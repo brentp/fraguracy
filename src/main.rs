@@ -85,6 +85,13 @@ pub struct ReadCoordinates {
 }
 
 #[inline(always)]
+fn is_insertion(a: Cigar) -> bool {
+    return match a {
+        Cigar::Ins(n) => true,
+        _ => false
+    }
+}
+#[inline(always)]
 fn query(a: Cigar) -> i64 {
     return match a {
         Cigar::Match(n) | Cigar::SoftClip(n) | Cigar::Ins(n) | Cigar::Diff(n) | Cigar::Equal(n) => {
@@ -104,7 +111,7 @@ fn reference(a: Cigar) -> i64 {
 }
 
 /// Return mapped parts of each read that overlap the other. Coordinates are in read-space.
-fn overlap_pieces(a: CigarStringView, b: CigarStringView) -> Vec<[ReadCoordinates; 2]> {
+fn overlap_pieces(a: CigarStringView, b: CigarStringView, skip_insertions: bool) -> Vec<[ReadCoordinates; 2]> {
     let aend = a.end_pos();
     let bend = b.end_pos();
     //let astart = a.pos() + a.leading_softclips();
@@ -133,46 +140,65 @@ fn overlap_pieces(a: CigarStringView, b: CigarStringView) -> Vec<[ReadCoordinate
                 b_genome_pos += reference(b[bi]);
                 b_read_pos += query(b[bi]);
                 bi += 1;
-            } 
-        } else { // we have some overlap.
+            }
+        } else {
+            // we have some overlap.
             // if they both consume query, we can append to our result.
-            if query(a[ai.min(b.len() - 1)]) > 0 && query(b[bi.min(b.len() - 1)]) > 0 {
+            let aop = a[ai.min(a.len() - 1)];
+            let bop = b[bi.min(b.len() - 1)];
+            if query(aop) > 0 && query(bop) > 0 {
                 let genome_start = a_genome_pos.max(b_genome_pos);
                 let genome_stop = a_genome_stop.min(b_genome_stop);
-                let glen = genome_stop - genome_start;
-                // glen can be 0 if, e.g. both reads end with soft-clip.
+
+                let mut glen = genome_stop - genome_start;
+                if glen == 0 && !skip_insertions {
+
+                    // if they are both the same insertion, then we will evaluate.
+                    // otherwise, we can not.
+                    if aop == bop && is_insertion(aop) {
+                        glen = aop.len() as i64;
+                    }
+                }
+
+
+                // if glen is 0, we didn't consume any reference, but can have, e.g. both deletions.
                 if glen > 0 {
 
+
+
+
+                
+                //let a_over = aop.len() as i64 - (genome_start - a_genome_pos);
+                //let b_over = bop.len() as i64 - (genome_start - b_genome_pos);
+
+
+                // glen can be 0 if, e.g. both reads end with soft-clip.
                     let a_over = genome_start - a_genome_pos;
                     let b_over = genome_start - b_genome_pos;
 
                     result.push([
-                        ReadCoordinates{start: (a_read_pos + a_over) as u32, stop: (a_read_pos + a_over + glen) as u32},
-                        ReadCoordinates{start: (b_read_pos + b_over) as u32, stop: (b_read_pos + b_over + glen) as u32},
+                        ReadCoordinates {
+                            start: (a_read_pos + a_over) as u32,
+                            stop: (a_read_pos + a_over + glen) as u32,
+                        },
+                        ReadCoordinates {
+                            start: (b_read_pos + b_over) as u32,
+                            stop: (b_read_pos + b_over + glen) as u32,
+                        },
                     ])
                 }
-
             }
             // we had some overlap. now we increment the lowest genome pos by end.
             if a_genome_stop <= b_genome_stop && ai < a.len() {
                 a_genome_pos += reference(a[ai]);
                 a_read_pos += query(a[ai]);
                 ai += 1;
-
             }
             if b_genome_stop <= a_genome_stop && bi < b.len() {
                 b_genome_pos += reference(b[bi]);
                 b_read_pos += query(b[bi]);
                 bi += 1;
             }
-
-
-
-
-
-
-
-
         }
     }
 
@@ -185,28 +211,98 @@ mod tests {
     use rust_htslib::bam::record::{Cigar, CigarString};
 
     #[test]
-    fn test_simple_overlap() {
-        let a = CigarString(vec![Cigar::Match(10), Cigar::Match(80), Cigar::SoftClip(10)]).into_view(8);
-        let b = CigarString(vec![Cigar::Match(70), Cigar::Match(40), Cigar::SoftClip(10)]).into_view(5);
+    fn test_same_insertion() {
+        let a = CigarString(vec![Cigar::Match(10), Cigar::Ins(8), Cigar::Match(10)]).into_view(8);
+        let b = CigarString(vec![Cigar::Match(10), Cigar::Ins(8), Cigar::Match(10)]).into_view(5);
+        let r = overlap_pieces(a, b, false);
+        dbg!(&r);
+    }
 
-        let r = overlap_pieces(a, b);
+    #[test]
+    fn test_many_contained() {
+        let a = CigarString(vec![Cigar::Match(100)]).into_view(10);
+        let b = CigarString(vec![Cigar::Match(10), Cigar::Match(11), Cigar::Match(12), Cigar::Match(13)]).into_view(0);
+        let r = overlap_pieces(a, b, true);
+        let expected = [
+            [
+                ReadCoordinates {
+                    start: 0,
+                    stop: 11,
+                },
+                ReadCoordinates {
+                    start: 10,
+                    stop: 21,
+                },
+            ],
+            [
+                ReadCoordinates {
+                    start: 11,
+                    stop: 23,
+                },
+                ReadCoordinates {
+                    start: 21,
+                    stop: 33,
+                },
+            ],
+            [
+                ReadCoordinates {
+                    start: 23,
+                    stop: 36,
+                },
+                ReadCoordinates {
+                    start: 33,
+                    stop: 46,
+                },
+            ],
+        ];
+        assert_eq!(r, expected);
+    }
+
+    #[test]
+    fn test_simple_overlap() {
+        let a = CigarString(vec![
+            Cigar::Match(10),
+            Cigar::Match(80),
+            Cigar::SoftClip(10),
+        ])
+        .into_view(8);
+        let b = CigarString(vec![
+            Cigar::Match(70),
+            Cigar::Match(40),
+            Cigar::SoftClip(10),
+        ])
+        .into_view(5);
+
+        let r = overlap_pieces(a, b, true);
 
         let expected = [
             [
-                ReadCoordinates { start: 0, stop: 10, },
-                ReadCoordinates { start: 3, stop: 13, },
+                ReadCoordinates { start: 0, stop: 10 },
+                ReadCoordinates { start: 3, stop: 13 },
             ],
             [
-                ReadCoordinates { start: 10, stop: 67, },
-                ReadCoordinates { start: 13, stop: 70, },
+                ReadCoordinates {
+                    start: 10,
+                    stop: 67,
+                },
+                ReadCoordinates {
+                    start: 13,
+                    stop: 70,
+                },
             ],
             [
-                ReadCoordinates { start: 67, stop: 90, },
-                ReadCoordinates { start: 70, stop: 93, },
+                ReadCoordinates {
+                    start: 67,
+                    stop: 90,
+                },
+                ReadCoordinates {
+                    start: 70,
+                    stop: 93,
+                },
             ],
         ];
 
-        dbg!(&r);
         assert_eq!(r, expected);
     }
+
 }
