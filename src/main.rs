@@ -49,24 +49,46 @@ fn main() {
                     return;
                 }
                 n_overlapping += 1;
-                eprintln!(
-                    "{a_tid}:{a_pos}-{a_end}({a_cigar}) <-> {b_tid}:{b_pos}-{b_end}({b_cigar})",
-                    a_tid = chroms[a.tid() as usize],
-                    a_pos = a.pos(),
-                    a_end = a.cigar().end_pos(),
-                    a_cigar = a.cigar(),
-                    b_tid = chroms[b.tid() as usize],
-                    b_pos = b.pos(),
-                    b_end = b.cigar().end_pos(),
-                    b_cigar = b.cigar(),
-                );
                 assert!(a.pos() <= b.pos());
-                eprintln!(
-                    "map len:{:?} total: {:?}, overlapping: {:?}",
-                    map.len(),
-                    n_pairs,
-                    n_overlapping
-                );
+                let pieces = overlap_pieces(a.cigar(), b.cigar(), false);
+                if pieces.len() == 0 { return }
+                let a_seq = a.seq();
+                let b_seq = b.seq();
+                let mut bases_overlap = 0;
+                let mut mismatch_bases = 0;
+                for [a_chunk, b_chunk] in pieces {
+                    let mut bi = b_chunk.start as usize;
+                    bases_overlap += b_chunk.stop - b_chunk.start;
+                    for ai in a_chunk.start .. a_chunk.stop {
+                        let a_base = unsafe { a_seq.decoded_base_unchecked(ai as usize) } ;
+                        let b_base = unsafe { b_seq.decoded_base_unchecked(bi) } ;
+                        mismatch_bases +=  (a_base != b_base) as i32;
+                        bi += 1;
+                    }
+
+                }
+                if mismatch_bases > 4 {
+                    eprintln!(
+                        "{qname} {a_tid}:{a_pos}-{a_end}({a_cigar}),Q:{a_qual} <-> {b_tid}:{b_pos}-{b_end}({b_cigar})Q:{b_qual}  mismatches:({mismatch_bases}/{bases_overlap})",
+                        qname = str::from_utf8(a.qname()).unwrap(),
+                        a_tid = chroms[a.tid() as usize],
+                        a_pos = a.pos(),
+                        a_end = a.cigar().end_pos(),
+                        a_cigar = a.cigar(),
+                        b_tid = chroms[b.tid() as usize],
+                        b_pos = b.pos(),
+                        b_end = b.cigar().end_pos(),
+                        b_cigar = b.cigar(),
+                        a_qual = a.mapq(),
+                        b_qual = b.mapq(),
+                    );
+                    eprintln!(
+                        "map len:{:?} total: {:?}, overlapping: {:?}",
+                        map.len(),
+                        n_pairs,
+                        n_overlapping
+                    );
+                }
             }
         });
     eprintln!(
@@ -87,9 +109,9 @@ pub struct ReadCoordinates {
 #[inline(always)]
 fn is_insertion(a: Cigar) -> bool {
     return match a {
-        Cigar::Ins(n) => true,
-        _ => false
-    }
+        Cigar::Ins(_) => true,
+        _ => false,
+    };
 }
 #[inline(always)]
 fn query(a: Cigar) -> i64 {
@@ -111,7 +133,11 @@ fn reference(a: Cigar) -> i64 {
 }
 
 /// Return mapped parts of each read that overlap the other. Coordinates are in read-space.
-fn overlap_pieces(a: CigarStringView, b: CigarStringView, skip_insertions: bool) -> Vec<[ReadCoordinates; 2]> {
+fn overlap_pieces(
+    a: CigarStringView,
+    b: CigarStringView,
+    skip_insertions: bool,
+) -> Vec<[ReadCoordinates; 2]> {
     let aend = a.end_pos();
     let bend = b.end_pos();
     //let astart = a.pos() + a.leading_softclips();
@@ -152,7 +178,6 @@ fn overlap_pieces(a: CigarStringView, b: CigarStringView, skip_insertions: bool)
 
                 let mut glen = genome_stop - genome_start;
                 if glen == 0 && !skip_insertions {
-
                     // if they are both the same insertion, then we will evaluate.
                     // otherwise, we can not.
                     if aop == bop && is_insertion(aop) {
@@ -160,19 +185,12 @@ fn overlap_pieces(a: CigarStringView, b: CigarStringView, skip_insertions: bool)
                     }
                 }
 
-
                 // if glen is 0, we didn't consume any reference, but can have, e.g. both deletions.
                 if glen > 0 {
+                    //let a_over = aop.len() as i64 - (genome_start - a_genome_pos);
+                    //let b_over = bop.len() as i64 - (genome_start - b_genome_pos);
 
-
-
-
-                
-                //let a_over = aop.len() as i64 - (genome_start - a_genome_pos);
-                //let b_over = bop.len() as i64 - (genome_start - b_genome_pos);
-
-
-                // glen can be 0 if, e.g. both reads end with soft-clip.
+                    // glen can be 0 if, e.g. both reads end with soft-clip.
                     let a_over = genome_start - a_genome_pos;
                     let b_over = genome_start - b_genome_pos;
 
@@ -211,6 +229,14 @@ mod tests {
     use rust_htslib::bam::record::{Cigar, CigarString};
 
     #[test]
+    fn test_different_alignments() {
+        let a = CigarString(vec![Cigar::Match(5), Cigar::Ins(3), Cigar::Match(5)]).into_view(0);
+        let b = CigarString(vec![Cigar::Match(13)]).into_view(0);
+        let r = overlap_pieces(a, b, false);
+        dbg!(&r);
+    }
+
+    #[test]
     fn test_same_insertion() {
         let a = CigarString(vec![Cigar::Match(10), Cigar::Ins(8), Cigar::Match(10)]).into_view(8);
         let b = CigarString(vec![Cigar::Match(10), Cigar::Ins(8), Cigar::Match(10)]).into_view(5);
@@ -221,14 +247,17 @@ mod tests {
     #[test]
     fn test_many_contained() {
         let a = CigarString(vec![Cigar::Match(100)]).into_view(10);
-        let b = CigarString(vec![Cigar::Match(10), Cigar::Match(11), Cigar::Match(12), Cigar::Match(13)]).into_view(0);
+        let b = CigarString(vec![
+            Cigar::Match(10),
+            Cigar::Match(11),
+            Cigar::Match(12),
+            Cigar::Match(13),
+        ])
+        .into_view(0);
         let r = overlap_pieces(a, b, true);
         let expected = [
             [
-                ReadCoordinates {
-                    start: 0,
-                    stop: 11,
-                },
+                ReadCoordinates { start: 0, stop: 11 },
                 ReadCoordinates {
                     start: 10,
                     stop: 21,
@@ -304,5 +333,4 @@ mod tests {
 
         assert_eq!(r, expected);
     }
-
 }
