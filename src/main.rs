@@ -5,17 +5,30 @@ use rust_htslib::bam::{
 use rustc_hash::FxHashMap;
 
 use std::env;
+use std::rc::Rc;
 use std::str;
+
+fn filter_read(r: &Rc<Record>) -> bool {
+    r.tid() == r.mtid()
+        && r.tid() >= 0
+        && !r.is_unmapped()
+        && !r.is_mate_unmapped()
+        && (r.pos() - r.mpos()).abs() < 1000
+        && !r.is_supplementary()
+        && !r.is_secondary()
+}
 
 fn main() {
     let args: Vec<String> = env::args().collect();
     let mut map = FxHashMap::default();
+    let min_base_qual = 10u8;
+    let mut mm = 0;
 
     let mut bam = Reader::from_path(&args[1]).expect("error reading bam file {args[1]}");
     bam.set_threads(3).expect("error setting threads");
     let mut n_total = 0;
     let mut n_pairs = 0;
-    let mut n_overlapping = 0;
+    let mut bases_overlapping = 0;
     let chroms: Vec<String> = bam
         .header()
         .target_names()
@@ -24,17 +37,11 @@ fn main() {
         .collect();
 
     bam.rc_records()
-        .map(|r| r.expect("error parsing read"))
-        .filter(|r| {
+        .map(|r| {
             n_total += 1;
-            r.tid() == r.mtid()
-                && r.tid() >= 0
-                && !r.is_unmapped()
-                && !r.is_mate_unmapped()
-                && (r.pos() - r.mpos()).abs() < 1000
-                && !r.is_supplementary()
-                && !r.is_secondary()
+            r.expect("error parsing read") 
         })
+        .filter(filter_read)
         .for_each(|b| {
             let name = unsafe { str::from_utf8_unchecked(b.qname()) }.to_string();
             if b.is_first_in_template() {
@@ -48,28 +55,44 @@ fn main() {
                 if a.cigar().end_pos() < b.pos() {
                     return;
                 }
-                n_overlapping += 1;
                 assert!(a.pos() <= b.pos());
                 let pieces = overlap_pieces(a.cigar(), b.cigar(), false);
                 if pieces.len() == 0 { return }
                 let a_seq = a.seq();
                 let b_seq = b.seq();
+                let a_qual = a.qual();
+                let b_qual = b.qual();
                 let mut bases_overlap = 0;
                 let mut mismatch_bases = 0;
+                let mut mquals = vec![];
                 for [a_chunk, b_chunk] in pieces {
                     let mut bi = b_chunk.start as usize;
-                    bases_overlap += b_chunk.stop - b_chunk.start;
                     for ai in a_chunk.start .. a_chunk.stop {
+                        let aq = a_qual[ai as usize];
+                        if aq < min_base_qual { bi += 1; continue }
+
+                        let bq = b_qual[bi as usize];
+                        if bq < min_base_qual { bi += 1; continue }
+
+                        bases_overlap += 1;
+
                         let a_base = unsafe { a_seq.decoded_base_unchecked(ai as usize) } ;
                         let b_base = unsafe { b_seq.decoded_base_unchecked(bi) } ;
+
                         mismatch_bases +=  (a_base != b_base) as i32;
+                        if a_base != b_base {
+                            mquals.push(a_qual[ai as usize]);
+                            mquals.push(b_qual[bi]);
+                        }
                         bi += 1;
                     }
 
                 }
-                if mismatch_bases > 4 {
+                bases_overlapping += bases_overlap;
+                if mismatch_bases > 0 {
+                    mm += 1;
                     eprintln!(
-                        "{qname} {a_tid}:{a_pos}-{a_end}({a_cigar}),Q:{a_qual} <-> {b_tid}:{b_pos}-{b_end}({b_cigar})Q:{b_qual}  mismatches:({mismatch_bases}/{bases_overlap})",
+                        "{qname} {a_tid}:{a_pos}-{a_end}({a_cigar}),Q:{a_qual} <-> {b_tid}:{b_pos}-{b_end}({b_cigar})Q:{b_qual}  mismatches:({mismatch_bases}/{bases_overlap}) quals: {mquals:?}",
                         qname = str::from_utf8(a.qname()).unwrap(),
                         a_tid = chroms[a.tid() as usize],
                         a_pos = a.pos(),
@@ -81,22 +104,24 @@ fn main() {
                         b_cigar = b.cigar(),
                         a_qual = a.mapq(),
                         b_qual = b.mapq(),
+                        mquals = mquals,
                     );
                     eprintln!(
-                        "map len:{:?} total: {:?}, overlapping: {:?}",
+                        "map len:{:?} total: {:?}, overlapping-bases: {:?}",
                         map.len(),
                         n_pairs,
-                        n_overlapping
+                        bases_overlapping,
                     );
                 }
             }
         });
     eprintln!(
-        "map len:{:?} total: {:?}, overlapping: {:?}, pairs: {}",
+        "map len:{:?} total: {:?}, bases-overlapping: {:?}, pairs: {} total mismatches: {}",
         map.len(),
         n_total,
-        n_overlapping,
+        bases_overlapping,
         n_pairs,
+        mm,
     );
 }
 
