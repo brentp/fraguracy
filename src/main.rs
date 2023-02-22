@@ -1,3 +1,7 @@
+mod fraguracy;
+#[macro_use]
+extern crate lazy_static;
+
 use rust_htslib::bam::{
     record::{Cigar, CigarStringView},
     Read, Reader, Record,
@@ -7,18 +11,6 @@ use rustc_hash::FxHashMap;
 use std::env;
 use std::rc::Rc;
 use std::str;
-
-fn filter_read(r: &Rc<Record>) -> bool {
-    r.tid() == r.mtid()
-        && r.tid() >= 0
-        && !r.is_unmapped()
-        && !r.is_mate_unmapped()
-        && (r.pos() - r.mpos()).abs() < 1000
-        && !r.is_supplementary()
-        && !r.is_secondary()
-        && !r.is_duplicate()
-        && !r.is_quality_check_failed()
-}
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -31,7 +23,7 @@ fn main() {
     bam.set_threads(3).expect("error setting threads");
     let mut n_total = 0;
     let mut n_pairs = 0;
-    let mut bases_overlapping = 0;
+    let mut bases_overlapping = 0u64;
     let chroms: Vec<String> = bam
         .header()
         .target_names()
@@ -44,7 +36,7 @@ fn main() {
             n_total += 1;
             r.expect("error parsing read")
         })
-        .filter(filter_read)
+        .filter(fraguracy::filter_read)
         .for_each(|b| {
             let name = unsafe { str::from_utf8_unchecked(b.qname()) }.to_string();
             if b.is_first_in_template() {
@@ -108,7 +100,7 @@ fn main() {
                         bi += 1;
                     }
                 }
-                bases_overlapping += bases_overlap;
+                bases_overlapping += bases_overlap as u64;
                 if mismatch_bases > 0 {
                     mm += 1;
                     eprintln!(
@@ -116,6 +108,7 @@ fn main() {
                         <-> {b_tid}:{b_pos}-{b_end}({b_cigar})Q:{b_qual} \
                           mismatches:({mismatch_bases}/{bases_overlap}) quals: {mquals:?}",
                         qname = str::from_utf8(a.qname()).unwrap(),
+                        mismatch_bases = mismatch_bases as u64,
                         a_tid = chroms[a.tid() as usize],
                         a_pos = a.pos(),
                         a_end = a.cigar().end_pos(),

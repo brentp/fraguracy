@@ -27,12 +27,12 @@ Base-Qualities and Mapping Qualities will be binned to:
 
 ### Sequence Context (6)
 
-0. C->A
-1. C->G
-2. C->T
-3. T->A
-4. T->C
-5. T->G
+0. C->A (G->T)
+1. C->G (G->C)
+2. C->T (G->A)
+3. T->A (A->T)
+4. T->C (A->G)
+5. T->G (A->C)
 
 ### Read (2)
 

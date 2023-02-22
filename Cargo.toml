@@ -10,6 +10,7 @@ rust-htslib = { git = "https://github.com/rust-bio/rust-htslib", rev = "6b155182
 libc = "*"
 clap = "4.1.6"
 rustc-hash = "1.1.0"
+lazy_static = "1.4.0"
 
 [profile.release]
 lto = "fat"
