@@ -8,9 +8,10 @@ edition = "2021"
 [dependencies]
 rust-htslib = { git = "https://github.com/rust-bio/rust-htslib", rev = "6b1551829d98445fab6f89da06c0f86d38f379ce", features = ["libdeflate", "static", "gcs", "s3"] }
 libc = "*"
-clap = "4.1.6"
+clap = {version = "4.1.6", features = ["derive"]}
 rustc-hash = "1.1.0"
 lazy_static = "1.4.0"
+ndarray = "0.15.6"
 
 [profile.release]
 lto = "fat"

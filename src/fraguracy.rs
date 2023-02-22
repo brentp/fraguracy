@@ -1,3 +1,5 @@
+use ndarray::prelude::{Array, ArrayBase, ArrayView5};
+use ndarray::{Array5, ArrayViewMut5};
 use rust_htslib::bam::Record;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -31,22 +33,23 @@ pub(crate) fn filter_read(r: &Rc<Record>) -> bool {
         && !r.is_quality_check_failed()
 }
 
-enum Context {
-    CA = 0,
-    CG,
-    CT,
-    TA,
-    TC,
-    TG,
-}
-struct ReadInfo {
-    readPos: u8,
-    baseQ: u8,
-    mapQ: u8,
-    context: Context,
+fn b() {
+    let mut m: Array5<u64> = Array::zeros((2, 50, 5, 5, 6));
+
+    start(m.view_mut());
+    start(m.view_mut());
 }
 
-struct Fragment {
-    read1: ReadInfo,
-    read2: ReadInfo,
+fn start(mut counts: ArrayViewMut5<u64>) {
+    //let mut counts = Array::zeros((6, 2, 50, 5, 5));
+    counts[[0, 0, 20, 2, 2]] += 1;
+}
+
+struct ReadInfo {
+    read_pos: u8,
+    base_q: u8,
+    map_q: u8,
+    context: u8,
+    read: u8, // read 1 or read 2.
+    count: u64,
 }

@@ -1,6 +1,8 @@
 mod fraguracy;
 #[macro_use]
 extern crate lazy_static;
+use clap::{Args, Parser, Subcommand};
+use std::path::PathBuf;
 
 use rust_htslib::bam::{
     record::{Cigar, CigarStringView},
@@ -9,17 +11,40 @@ use rust_htslib::bam::{
 use rustc_hash::FxHashMap;
 
 use std::env;
-use std::rc::Rc;
 use std::str;
 
+#[derive(Debug, Parser)]
+#[command(name = "fraguracy")]
+#[command(about = "read accuracy from fragment overlaps")]
+
+// see: https://docs.rs/clap/latest/clap/_cookbook/git_derive/index.html
+struct Cli {
+    #[command(subcommand)]
+    command: Commands,
+}
+
+#[derive(Debug, Subcommand)]
+enum Commands {
+    #[command(arg_required_else_help = true)]
+    Extract { bam: PathBuf },
+}
+
 fn main() {
-    let args: Vec<String> = env::args().collect();
+    let args = Cli::parse();
+
+    match args.command {
+        Commands::Extract { bam } => extract_main(bam),
+    }
+}
+
+fn extract_main(path: PathBuf) {
+    //let args: Vec<String> = env::args().collect();
     let mut map = FxHashMap::default();
     let min_base_qual = 10u8;
     let min_map_q = 10u8;
     let mut mm = 0;
 
-    let mut bam = Reader::from_path(&args[1]).expect("error reading bam file {args[1]}");
+    let mut bam = Reader::from_path(path).expect("error reading bam file {args[1]}");
     bam.set_threads(3).expect("error setting threads");
     let mut n_total = 0;
     let mut n_pairs = 0;
