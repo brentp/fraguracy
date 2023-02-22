@@ -16,6 +16,8 @@ fn filter_read(r: &Rc<Record>) -> bool {
         && (r.pos() - r.mpos()).abs() < 1000
         && !r.is_supplementary()
         && !r.is_secondary()
+        && !r.is_duplicate()
+        && !r.is_quality_check_failed()
 }
 
 fn main() {
@@ -49,7 +51,11 @@ fn main() {
                 n_pairs += 1;
             }
 
-            if b.pos() < b.mpos() || (b.pos() == b.mpos() && !map.contains_key(&name)) {
+            // by not checking the order here, we allow bams sorted by read name (with position flipped)
+            // this gives about 5% performance penalty over checking b.pos() < b.mpos(), but allows us
+            // to support more files.
+            if !map.contains_key(&name) {
+                assert!(!map.contains_key(&name));
                 map.insert(name, b.clone());
             } else if let Some(a) = map.remove(&name) {
                 // so we know a is before b, but we don't know if they overlap.
@@ -62,7 +68,7 @@ fn main() {
                 if a.cigar().end_pos() < b.pos() {
                     return;
                 }
-                assert!(a.pos() <= b.pos());
+                //assert!(a.pos() <= b.pos());
                 let pieces = overlap_pieces(a.cigar(), b.cigar(), false);
                 if pieces.len() == 0 {
                     return;
@@ -129,10 +135,12 @@ fn main() {
                         bases_overlapping,
                     );
                 }
+            } else {
+                eprintln!("not found: {:?}{:?}", name, b.pos());
             }
         });
     eprintln!(
-        "map len:{:?} total: {:?}, bases-overlapping: {:?}, pairs: {} total mismatches: {}",
+        "[FINAL] map len:{:?} total: {:?}, bases-overlapping: {:?}, pairs: {} total mismatches: {}",
         map.len(),
         n_total,
         bases_overlapping,
