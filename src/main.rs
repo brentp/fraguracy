@@ -22,6 +22,7 @@ fn main() {
     let args: Vec<String> = env::args().collect();
     let mut map = FxHashMap::default();
     let min_base_qual = 10u8;
+    let min_map_q = 10u8;
     let mut mm = 0;
 
     let mut bam = Reader::from_path(&args[1]).expect("error reading bam file {args[1]}");
@@ -39,7 +40,7 @@ fn main() {
     bam.rc_records()
         .map(|r| {
             n_total += 1;
-            r.expect("error parsing read") 
+            r.expect("error parsing read")
         })
         .filter(filter_read)
         .for_each(|b| {
@@ -52,12 +53,20 @@ fn main() {
                 map.insert(name, b.clone());
             } else if let Some(a) = map.remove(&name) {
                 // so we know a is before b, but we don't know if they overlap.
+                if a.mapq() < min_map_q {
+                    return;
+                }
+                if b.mapq() < min_map_q {
+                    return;
+                }
                 if a.cigar().end_pos() < b.pos() {
                     return;
                 }
                 assert!(a.pos() <= b.pos());
                 let pieces = overlap_pieces(a.cigar(), b.cigar(), false);
-                if pieces.len() == 0 { return }
+                if pieces.len() == 0 {
+                    return;
+                }
                 let a_seq = a.seq();
                 let b_seq = b.seq();
                 let a_qual = a.qual();
@@ -67,32 +76,39 @@ fn main() {
                 let mut mquals = vec![];
                 for [a_chunk, b_chunk] in pieces {
                     let mut bi = b_chunk.start as usize;
-                    for ai in a_chunk.start .. a_chunk.stop {
+                    for ai in a_chunk.start..a_chunk.stop {
                         let aq = a_qual[ai as usize];
-                        if aq < min_base_qual { bi += 1; continue }
+                        if aq < min_base_qual {
+                            bi += 1;
+                            continue;
+                        }
 
                         let bq = b_qual[bi as usize];
-                        if bq < min_base_qual { bi += 1; continue }
+                        if bq < min_base_qual {
+                            bi += 1;
+                            continue;
+                        }
 
                         bases_overlap += 1;
 
-                        let a_base = unsafe { a_seq.decoded_base_unchecked(ai as usize) } ;
-                        let b_base = unsafe { b_seq.decoded_base_unchecked(bi) } ;
+                        let a_base = unsafe { a_seq.decoded_base_unchecked(ai as usize) };
+                        let b_base = unsafe { b_seq.decoded_base_unchecked(bi) };
 
-                        mismatch_bases +=  (a_base != b_base) as i32;
+                        mismatch_bases += (a_base != b_base) as i32;
                         if a_base != b_base {
                             mquals.push(a_qual[ai as usize]);
                             mquals.push(b_qual[bi]);
                         }
                         bi += 1;
                     }
-
                 }
                 bases_overlapping += bases_overlap;
                 if mismatch_bases > 0 {
                     mm += 1;
                     eprintln!(
-                        "{qname} {a_tid}:{a_pos}-{a_end}({a_cigar}),Q:{a_qual} <-> {b_tid}:{b_pos}-{b_end}({b_cigar})Q:{b_qual}  mismatches:({mismatch_bases}/{bases_overlap}) quals: {mquals:?}",
+                        "{qname} {a_tid}:{a_pos}-{a_end}({a_cigar}),Q:{a_qual} \
+                        <-> {b_tid}:{b_pos}-{b_end}({b_cigar})Q:{b_qual} \
+                          mismatches:({mismatch_bases}/{bases_overlap}) quals: {mquals:?}",
                         qname = str::from_utf8(a.qname()).unwrap(),
                         a_tid = chroms[a.tid() as usize],
                         a_pos = a.pos(),
