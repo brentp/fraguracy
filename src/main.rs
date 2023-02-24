@@ -6,10 +6,7 @@ use ndarray::prelude::Array;
 use ndarray::Array5;
 use std::path::PathBuf;
 
-use rust_htslib::bam::{
-    record::{Cigar, CigarStringView},
-    Read, Reader, Record,
-};
+use rust_htslib::bam::{IndexedReader, Read, Reader};
 use rustc_hash::FxHashMap;
 
 use std::env;
@@ -45,10 +42,13 @@ fn extract_main(path: PathBuf) {
     let min_base_qual = 10u8;
     let min_map_q = 10u8;
 
-    let mut counts = fraguracy::Counts::new();
-
-    let mut bam = Reader::from_path(path).expect("error reading bam file {args[1]}");
+    let mut bam = Reader::from_path(&path).expect("error reading bam file {path}");
     bam.set_threads(3).expect("error setting threads");
+
+    let mut ibam =
+        IndexedReader::from_path(&path).expect("bam file (path) must be sorted and indexed");
+    let mut counts = fraguracy::Counts::new(ibam);
+
     let mut n_total = 0;
     let mut n_pairs = 0;
     let mut bases_overlapping = 0u64;

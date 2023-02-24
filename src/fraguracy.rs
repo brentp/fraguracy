@@ -1,8 +1,9 @@
 use ndarray::prelude::{Array, ArrayBase, ArrayView6};
 use ndarray::{Array6, ArrayViewMut6};
+use rust_htslib::bam::Read;
 use rust_htslib::bam::{
     record::{Cigar, CigarStringView},
-    Read, Reader, Record,
+    IndexedReader, Record,
 };
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -10,17 +11,19 @@ use std::str;
 
 pub(crate) struct Counts {
     //  read, pos, mq, bp, ctx{6} */
-    pub muts: Array6<u64>,
+    pub(crate) ibam: IndexedReader,
+    pub(crate) muts: Array6<u64>,
     //  read, pos, mq, bp, ctx{2} */
-    pub cnts: Array6<u64>,
-    pub mismatches: u64,
-    pub matches: u64,
+    pub(crate) cnts: Array6<u64>,
+    pub(crate) mismatches: u64,
+    pub(crate) matches: u64,
 }
 
 impl Counts {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(ir: IndexedReader) -> Self {
         Counts {
             /*                         read1/2, F/R, pos, mq, bq, ctx */
+            ibam: ir,
             cnts: Array::zeros((2, 2, 50, 5, 5, 2)),
             muts: Array::zeros((2, 2, 50, 5, 5, 6)),
             mismatches: 0,
@@ -58,8 +61,7 @@ impl Counts {
         let amq = Counts::qual_to_bin(a.mapq());
         let bmq = Counts::qual_to_bin(b.mapq());
 
-        for [a_chunk, b_chunk] in pieces {
-            let mut bi = b_chunk.start as usize;
+        for [a_chunk, b_chunk, g_chunk] in pieces {
             for (ai, bi) in std::iter::zip(a_chunk.start..a_chunk.stop, b_chunk.start..b_chunk.stop)
             {
                 let aq = a_qual[ai as usize];
@@ -105,7 +107,11 @@ impl Counts {
 
                 if a_base != b_base {
                     // TODO: pileup and vote to determine error.
-                    self.mismatches += 1;
+                    let genome_pos = g_chunk.start + (ai - a_chunk.start);
+
+                    self.ibam
+                        .fetch((a.tid(), genome_pos, genome_pos))
+                        .expect("Error seeking to genomic position");
 
                     let index = [
                         a.is_first_in_template() as usize,
@@ -177,18 +183,6 @@ pub(crate) fn filter_read(r: &Rc<Record>) -> bool {
         && !r.is_quality_check_failed()
 }
 
-fn b() {
-    let mut m: Array6<u64> = Array::zeros((2, 2, 50, 5, 5, 6));
-
-    start(m.view_mut());
-    start(m.view_mut());
-}
-
-fn start(mut counts: ArrayViewMut6<u64>) {
-    //let mut counts = Array::zeros((2, 2, 2, 50, 5, 5));
-    counts[[0, 0, 0, 20, 2, 2]] += 1;
-}
-
 struct ReadInfo {
     read_pos: u8,
     base_q: u8,
@@ -199,7 +193,7 @@ struct ReadInfo {
 }
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct ReadCoordinates {
+pub struct Coordinates {
     pub start: u32,
     pub stop: u32,
 }
@@ -230,12 +224,13 @@ fn reference(a: Cigar) -> i64 {
     };
 }
 
-/// Return mapped parts of each read that overlap the other. Coordinates are in read-space.
+/// Return mapped parts of each read that overlap the other.
+/// Returns A, B, genome coordiantes.
 fn overlap_pieces(
     a: CigarStringView,
     b: CigarStringView,
     skip_insertions: bool,
-) -> Vec<[ReadCoordinates; 2]> {
+) -> Vec<[Coordinates; 3]> {
     let aend = a.end_pos();
     let bend = b.end_pos();
     //let astart = a.pos() + a.leading_softclips();
@@ -243,7 +238,7 @@ fn overlap_pieces(
     if aend <= b.pos() || bend <= a.pos() {
         return vec![];
     }
-    let mut result: Vec<[ReadCoordinates; 2]> = Vec::new();
+    let mut result: Vec<[Coordinates; 3]> = Vec::new();
     let mut ai: usize = 0;
     let mut bi: usize = 0;
     let mut a_genome_pos = a.pos();
@@ -293,13 +288,17 @@ fn overlap_pieces(
                     let b_over = genome_start - b_genome_pos;
 
                     result.push([
-                        ReadCoordinates {
+                        Coordinates {
                             start: (a_read_pos + a_over) as u32,
                             stop: (a_read_pos + a_over + glen) as u32,
                         },
-                        ReadCoordinates {
+                        Coordinates {
                             start: (b_read_pos + b_over) as u32,
                             stop: (b_read_pos + b_over + glen) as u32,
+                        },
+                        Coordinates {
+                            start: genome_start as u32,
+                            stop: genome_stop as u32,
                         },
                     ])
                 }
@@ -355,28 +354,40 @@ mod tests {
         let r = overlap_pieces(a, b, true);
         let expected = [
             [
-                ReadCoordinates { start: 0, stop: 11 },
-                ReadCoordinates {
+                Coordinates { start: 0, stop: 11 },
+                Coordinates {
+                    start: 10,
+                    stop: 21,
+                },
+                Coordinates {
                     start: 10,
                     stop: 21,
                 },
             ],
             [
-                ReadCoordinates {
+                Coordinates {
                     start: 11,
                     stop: 23,
                 },
-                ReadCoordinates {
+                Coordinates {
+                    start: 21,
+                    stop: 33,
+                },
+                Coordinates {
                     start: 21,
                     stop: 33,
                 },
             ],
             [
-                ReadCoordinates {
+                Coordinates {
                     start: 23,
                     stop: 36,
                 },
-                ReadCoordinates {
+                Coordinates {
+                    start: 33,
+                    stop: 46,
+                },
+                Coordinates {
                     start: 33,
                     stop: 46,
                 },
@@ -404,27 +415,36 @@ mod tests {
 
         let expected = [
             [
-                ReadCoordinates { start: 0, stop: 10 },
-                ReadCoordinates { start: 3, stop: 13 },
+                Coordinates { start: 0, stop: 10 },
+                Coordinates { start: 3, stop: 13 },
+                Coordinates { start: 8, stop: 18 },
             ],
             [
-                ReadCoordinates {
+                Coordinates {
                     start: 10,
                     stop: 67,
                 },
-                ReadCoordinates {
+                Coordinates {
                     start: 13,
                     stop: 70,
                 },
+                Coordinates {
+                    start: 18,
+                    stop: 75,
+                },
             ],
             [
-                ReadCoordinates {
+                Coordinates {
                     start: 67,
                     stop: 90,
                 },
-                ReadCoordinates {
+                Coordinates {
                     start: 70,
                     stop: 93,
+                },
+                Coordinates {
+                    start: 75,
+                    stop: 98,
                 },
             ],
         ];
