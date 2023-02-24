@@ -13,6 +13,8 @@ pub(crate) struct Counts {
     pub muts: Array6<u64>,
     //  read, pos, mq, bp, ctx{2} */
     pub cnts: Array6<u64>,
+    pub mismatches: u64,
+    pub matches: u64,
 }
 
 impl Counts {
@@ -21,6 +23,8 @@ impl Counts {
             /*                         read1/2, F/R, pos, mq, bq, ctx */
             cnts: Array::zeros((2, 2, 50, 5, 5, 2)),
             muts: Array::zeros((2, 2, 50, 5, 5, 6)),
+            mismatches: 0,
+            matches: 0,
         }
     }
     #[inline(always)]
@@ -56,24 +60,21 @@ impl Counts {
 
         for [a_chunk, b_chunk] in pieces {
             let mut bi = b_chunk.start as usize;
-            for ai in a_chunk.start..a_chunk.stop {
+            for (ai, bi) in std::iter::zip(a_chunk.start..a_chunk.stop, b_chunk.start..b_chunk.stop)
+            {
                 let aq = a_qual[ai as usize];
                 if aq < min_base_qual {
-                    bi += 1;
                     continue;
                 }
                 let bq = b_qual[bi as usize];
                 if bq < min_base_qual {
-                    bi += 1;
                     continue;
                 }
                 let bq = Counts::qual_to_bin(bq);
                 let aq = Counts::qual_to_bin(aq);
 
                 let a_base = unsafe { a_seq.decoded_base_unchecked(ai as usize) };
-                let b_base = unsafe { b_seq.decoded_base_unchecked(bi) };
-
-                let mismatch = a_base != b_base;
+                let b_base = unsafe { b_seq.decoded_base_unchecked(bi as usize) };
 
                 let a_pos = (ai / 3) as usize;
                 let b_pos = (bi / 3) as usize;
@@ -100,9 +101,12 @@ impl Counts {
 
                 self.cnts[a_index] += 1;
                 self.cnts[b_index] += 1;
+                self.matches += 1;
 
                 if a_base != b_base {
                     // TODO: pileup and vote to determine error.
+                    self.mismatches += 1;
+
                     let index = [
                         a.is_first_in_template() as usize,
                         1 - (a.is_reverse() as usize),

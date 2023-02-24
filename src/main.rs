@@ -42,8 +42,8 @@ fn main() {
 fn extract_main(path: PathBuf) {
     //let args: Vec<String> = env::args().collect();
     let mut map = FxHashMap::default();
-    let min_base_qual = 0u8;
-    let min_map_q = 0u8;
+    let min_base_qual = 10u8;
+    let min_map_q = 10u8;
 
     let mut counts = fraguracy::Counts::new();
 
@@ -94,11 +94,14 @@ fn extract_main(path: PathBuf) {
             }
         });
     eprintln!(
-        "[FINAL] map len:{:?} total: {:?}, bases-overlapping: {:?}, pairs: {}, counts: {:?}",
+        "[FINAL] map len:{:?} total: {:?}, bases-overlapping: {:?}, pairs: {}, counts: {:?} \
+        \n mismatches: {} matches: {}",
         map.len(),
         n_total,
         bases_overlapping,
         n_pairs,
         counts.cnts,
+        counts.mismatches,
+        counts.matches,
     );
 }
