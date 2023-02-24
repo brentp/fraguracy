@@ -47,6 +47,8 @@ fn extract_main(path: PathBuf) {
 
     let mut ibam =
         IndexedReader::from_path(&path).expect("bam file (path) must be sorted and indexed");
+    ibam.set_threads(3)
+        .expect("error setting threads on indexed reader");
     let mut counts = fraguracy::Counts::new(ibam);
 
     let mut n_total = 0;
@@ -88,7 +90,7 @@ fn extract_main(path: PathBuf) {
                 if a.cigar().end_pos() < b.pos() {
                     return;
                 }
-                counts.increment(a, b, min_base_qual);
+                counts.increment(a, b, min_base_qual, min_map_q);
             } else {
                 eprintln!("not found: {:?}{:?}", name, b.pos());
             }

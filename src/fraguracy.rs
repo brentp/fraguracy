@@ -49,7 +49,13 @@ impl Counts {
         }
     }
 
-    pub(crate) fn increment(&mut self, a: Rc<Record>, b: Rc<Record>, min_base_qual: u8) {
+    pub(crate) fn increment(
+        &mut self,
+        a: Rc<Record>,
+        b: Rc<Record>,
+        min_base_qual: u8,
+        min_map_qual: u8,
+    ) {
         let pieces = overlap_pieces(a.cigar(), b.cigar(), false);
         if pieces.len() == 0 {
             return;
@@ -108,10 +114,49 @@ impl Counts {
                 if a_base != b_base {
                     // TODO: pileup and vote to determine error.
                     let genome_pos = g_chunk.start + (ai - a_chunk.start);
+                    self.mismatches += 1;
 
                     self.ibam
-                        .fetch((a.tid(), genome_pos, genome_pos))
+                        .fetch((a.tid(), genome_pos, genome_pos + 1))
                         .expect("Error seeking to genomic position");
+
+                    let mut p = self.ibam.pileup();
+                    p.set_max_depth(1_000_000);
+                    let mut base_counts: [u32; 5] = [0; 5];
+                    p.filter(|col| col.as_ref().unwrap().pos() == genome_pos)
+                        .for_each(|col| {
+                            let col = col.unwrap();
+
+                            col.alignments().for_each(|aln| {
+                                if let Some(qpos) = aln.qpos() {
+                                    let record = aln.record();
+                                    if record.mapq() < min_map_qual {
+                                        return;
+                                    }
+                                    if record.qual()[qpos] < min_base_qual {
+                                        return;
+                                    }
+                                    let base_idx = match aln.record().seq()[qpos] as char {
+                                        'A' => 0,
+                                        'C' => 1,
+                                        'G' => 2,
+                                        'T' => 3,
+                                        _ => 4,
+                                    };
+                                    base_counts[base_idx] += 1;
+                                }
+                            });
+                        });
+
+                    eprintln!(
+                        "gpos: {}, mm: {}, base counts: ACGTN:{:?}, ai: {}, bi: {}, {:?}",
+                        genome_pos,
+                        self.mismatches,
+                        base_counts,
+                        ai,
+                        bi,
+                        unsafe { str::from_utf8_unchecked(a.qname()) },
+                    );
 
                     let index = [
                         a.is_first_in_template() as usize,
@@ -181,15 +226,6 @@ pub(crate) fn filter_read(r: &Rc<Record>) -> bool {
         && !r.is_secondary()
         && !r.is_duplicate()
         && !r.is_quality_check_failed()
-}
-
-struct ReadInfo {
-    read_pos: u8,
-    base_q: u8,
-    map_q: u8,
-    context: u8,
-    read: u8, // read 1 or read 2.
-    count: u64,
 }
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
