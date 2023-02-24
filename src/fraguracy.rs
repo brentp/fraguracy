@@ -100,7 +100,17 @@ impl Counts {
 
                 self.cnts[a_index] += 1;
                 self.cnts[b_index] += 1;
-                //eprintln!("{:?}", self.cnts);
+
+                if a_base != b_base {
+                    // TODO: pileup and vote to determine error.
+                    let index = [
+                        a.is_first_in_template() as usize,
+                        1 - (a.is_reverse() as usize),
+                        a_pos,
+                        amq as usize,
+                        aq as usize,
+                    ];
+                }
             }
         }
         /*
