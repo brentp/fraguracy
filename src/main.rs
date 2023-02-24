@@ -42,15 +42,10 @@ fn main() {
 fn extract_main(path: PathBuf) {
     //let args: Vec<String> = env::args().collect();
     let mut map = FxHashMap::default();
-    let min_base_qual = 10u8;
-    let min_map_q = 10u8;
-    let mut mm = 0;
+    let min_base_qual = 0u8;
+    let min_map_q = 0u8;
 
-    let mut counts = fraguracy::Counts {
-        /*                         read, pos, mq, bp, ctx */
-        cnts: Array::zeros((2, 50, 5, 5, 6)),
-        muts: Array::zeros((2, 50, 5, 5, 6)),
-    };
+    let mut counts = fraguracy::Counts::new();
 
     let mut bam = Reader::from_path(path).expect("error reading bam file {args[1]}");
     bam.set_threads(3).expect("error setting threads");
@@ -83,13 +78,13 @@ fn extract_main(path: PathBuf) {
                 assert!(!map.contains_key(&name));
                 map.insert(name, b.clone());
             } else if let Some(a) = map.remove(&name) {
-                // so we know a is before b, but we don't know if they overlap.
                 if a.mapq() < min_map_q {
                     return;
                 }
                 if b.mapq() < min_map_q {
                     return;
                 }
+                // we know a is before b, but we don't know if they overlap.
                 if a.cigar().end_pos() < b.pos() {
                     return;
                 }
@@ -99,11 +94,11 @@ fn extract_main(path: PathBuf) {
             }
         });
     eprintln!(
-        "[FINAL] map len:{:?} total: {:?}, bases-overlapping: {:?}, pairs: {} total mismatches: {}",
+        "[FINAL] map len:{:?} total: {:?}, bases-overlapping: {:?}, pairs: {}, counts: {:?}",
         map.len(),
         n_total,
         bases_overlapping,
         n_pairs,
-        mm,
+        counts.cnts,
     );
 }

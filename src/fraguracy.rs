@@ -1,5 +1,5 @@
-use ndarray::prelude::{Array, ArrayBase, ArrayView5};
-use ndarray::{Array5, ArrayViewMut5};
+use ndarray::prelude::{Array, ArrayBase, ArrayView6};
+use ndarray::{Array6, ArrayViewMut6};
 use rust_htslib::bam::{
     record::{Cigar, CigarStringView},
     Read, Reader, Record,
@@ -9,13 +9,40 @@ use std::rc::Rc;
 use std::str;
 
 pub(crate) struct Counts {
-    pub cnts: Array5<u64>,
-    pub muts: Array5<u64>,
+    //  read, pos, mq, bp, ctx{6} */
+    pub muts: Array6<u64>,
+    //  read, pos, mq, bp, ctx{2} */
+    pub cnts: Array6<u64>,
 }
 
 impl Counts {
+    pub(crate) fn new() -> Self {
+        Counts {
+            /*                         read1/2, F/R, pos, mq, bq, ctx */
+            cnts: Array::zeros((2, 2, 50, 5, 5, 2)),
+            muts: Array::zeros((2, 2, 50, 5, 5, 6)),
+        }
+    }
+    #[inline(always)]
+    fn qual_to_bin(q: u8) -> u8 {
+        match q {
+            0..=5 => 0,
+            6..=19 => 1,
+            20..=39 => 2,
+            40..=59 => 3,
+            _ => 4,
+        }
+    }
+
+    #[inline(always)]
+    fn base_to_ctx2(b: u8) -> usize {
+        match b as char {
+            'A' | 'T' => 0,
+            _ => 1,
+        }
+    }
+
     pub(crate) fn increment(&mut self, a: Rc<Record>, b: Rc<Record>, min_base_qual: u8) {
-        //assert!(a.pos() <= b.pos());
         let pieces = overlap_pieces(a.cigar(), b.cigar(), false);
         if pieces.len() == 0 {
             return;
@@ -24,9 +51,9 @@ impl Counts {
         let b_seq = b.seq();
         let a_qual = a.qual();
         let b_qual = b.qual();
-        let mut bases_overlap = 0;
-        let mut mismatch_bases = 0;
-        let mut mquals = vec![];
+        let amq = Counts::qual_to_bin(a.mapq());
+        let bmq = Counts::qual_to_bin(b.mapq());
+
         for [a_chunk, b_chunk] in pieces {
             let mut bi = b_chunk.start as usize;
             for ai in a_chunk.start..a_chunk.stop {
@@ -35,26 +62,48 @@ impl Counts {
                     bi += 1;
                     continue;
                 }
-
                 let bq = b_qual[bi as usize];
                 if bq < min_base_qual {
                     bi += 1;
                     continue;
                 }
-
-                bases_overlap += 1;
+                let bq = Counts::qual_to_bin(bq);
+                let aq = Counts::qual_to_bin(aq);
 
                 let a_base = unsafe { a_seq.decoded_base_unchecked(ai as usize) };
                 let b_base = unsafe { b_seq.decoded_base_unchecked(bi) };
 
-                mismatch_bases += (a_base != b_base) as i32;
-                if a_base != b_base {
-                    mquals.push(a_qual[ai as usize]);
-                    mquals.push(b_qual[bi]);
-                }
-                bi += 1;
+                let mismatch = a_base != b_base;
+
+                let a_pos = (ai / 3) as usize;
+                let b_pos = (bi / 3) as usize;
+
+                /*                         read1/2, F/R, pos, mq, bq, ctx */
+
+                let a_index = [
+                    a.is_first_in_template() as usize,
+                    1 - (a.is_reverse() as usize),
+                    a_pos,
+                    amq as usize,
+                    aq as usize,
+                    Counts::base_to_ctx2(a_base),
+                ];
+
+                let b_index = [
+                    b.is_first_in_template() as usize,
+                    1 - (b.is_reverse() as usize),
+                    b_pos,
+                    bmq as usize,
+                    bq as usize,
+                    Counts::base_to_ctx2(b_base),
+                ];
+
+                self.cnts[a_index] += 1;
+                self.cnts[b_index] += 1;
+                //eprintln!("{:?}", self.cnts);
             }
         }
+        /*
         if mismatch_bases > 0 {
             eprintln!(
                 "{qname} {a_tid}:{a_pos}-{a_end}({a_cigar}),Q:{a_qual} \
@@ -74,15 +123,14 @@ impl Counts {
                 b_qual = b.mapq(),
                 mquals = mquals,
             );
-            /*
             eprintln!(
                 "map len:{:?} total: {:?}, overlapping-bases: {:?}",
                 map.len(),
                 n_pairs,
                 bases_overlapping,
             );
-            */
         }
+            */
     }
 }
 
@@ -116,15 +164,15 @@ pub(crate) fn filter_read(r: &Rc<Record>) -> bool {
 }
 
 fn b() {
-    let mut m: Array5<u64> = Array::zeros((2, 50, 5, 5, 6));
+    let mut m: Array6<u64> = Array::zeros((2, 2, 50, 5, 5, 6));
 
     start(m.view_mut());
     start(m.view_mut());
 }
 
-fn start(mut counts: ArrayViewMut5<u64>) {
-    //let mut counts = Array::zeros((6, 2, 50, 5, 5));
-    counts[[0, 0, 20, 2, 2]] += 1;
+fn start(mut counts: ArrayViewMut6<u64>) {
+    //let mut counts = Array::zeros((2, 2, 2, 50, 5, 5));
+    counts[[0, 0, 0, 20, 2, 2]] += 1;
 }
 
 struct ReadInfo {
