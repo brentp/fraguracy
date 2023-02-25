@@ -1,3 +1,11 @@
+# TODO
+
+see locations like: samtools mpileup -r chr4:1801736-1801736 -q 10 -q 10 -d 100000 ./19610X1.mapped.sorted.bam
+often have a lot of bases with 'g' clustered. Just ignore?
+
+how to make pileup faster? do it and end when we have a list of variable sites?
+
+
 # Fraguracy
 
 `fraguracy` calculates error rates using overlapping reads in a fragment. This avoids some bias.

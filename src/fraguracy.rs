@@ -115,14 +115,14 @@ impl Counts {
                     // TODO: pileup and vote to determine error.
                     let genome_pos = g_chunk.start + (ai - a_chunk.start);
                     self.mismatches += 1;
+                    let mut base_counts: [u32; 5] = [0; 5];
 
                     self.ibam
                         .fetch((a.tid(), genome_pos, genome_pos + 1))
                         .expect("Error seeking to genomic position");
 
                     let mut p = self.ibam.pileup();
-                    p.set_max_depth(1_000_000);
-                    let mut base_counts: [u32; 5] = [0; 5];
+                    p.set_max_depth(100_000);
                     p.filter(|col| col.as_ref().unwrap().pos() == genome_pos)
                         .for_each(|col| {
                             let col = col.unwrap();
@@ -130,6 +130,12 @@ impl Counts {
                             col.alignments().for_each(|aln| {
                                 if let Some(qpos) = aln.qpos() {
                                     let record = aln.record();
+                                    // here we want a accurate count, so we skip stuff at either
+                                    // end of a read (within 3 bases of end)
+                                    // along with low base-quality and low mapping-quality
+                                    if qpos < 3 || qpos > record.qual().len() - 4 {
+                                        return;
+                                    }
                                     if record.mapq() < min_map_qual {
                                         return;
                                     }
@@ -168,34 +174,6 @@ impl Counts {
                 }
             }
         }
-        /*
-        if mismatch_bases > 0 {
-            eprintln!(
-                "{qname} {a_tid}:{a_pos}-{a_end}({a_cigar}),Q:{a_qual} \
-                        <-> {b_tid}:{b_pos}-{b_end}({b_cigar})Q:{b_qual} \
-                          mismatches:({mismatch_bases}/{bases_overlap}) quals: {mquals:?}",
-                qname = str::from_utf8(a.qname()).unwrap(),
-                mismatch_bases = mismatch_bases as u64,
-                a_tid = a.tid(),
-                a_pos = a.pos(),
-                a_end = a.cigar().end_pos(),
-                a_cigar = a.cigar(),
-                b_tid = b.tid(),
-                b_pos = b.pos(),
-                b_end = b.cigar().end_pos(),
-                b_cigar = b.cigar(),
-                a_qual = a.mapq(),
-                b_qual = b.mapq(),
-                mquals = mquals,
-            );
-            eprintln!(
-                "map len:{:?} total: {:?}, overlapping-bases: {:?}",
-                map.len(),
-                n_pairs,
-                bases_overlapping,
-            );
-        }
-            */
     }
 }
 
