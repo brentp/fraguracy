@@ -1,10 +1,7 @@
 mod fraguracy;
 #[macro_use]
 extern crate lazy_static;
-use clap::{Args, Parser, Subcommand};
-use log::{info, warn};
-use ndarray::prelude::Array;
-use ndarray::Array5;
+use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 use rust_htslib::bam::{IndexedReader, Read, Reader};
@@ -58,7 +55,6 @@ fn extract_main(path: PathBuf) {
 
     let mut n_total = 0;
     let mut n_pairs = 0;
-    let mut bases_overlapping = 0u64;
     let chroms: Vec<String> = bam
         .header()
         .target_names()
@@ -106,11 +102,10 @@ fn extract_main(path: PathBuf) {
             }
         });
     log::info!(
-        "[FINAL] map len:{:?} total: {:?}, bases-overlapping: {:?}, pairs: {}, counts: {:?} \
+        "[FINAL] map len:{:?} total reads: {:?}, pairs: {}, counts: {:?} \
         \n mismatches: {} matches: {}",
         map.len(),
         n_total,
-        bases_overlapping,
         n_pairs,
         counts.cnts,
         counts.mismatches,

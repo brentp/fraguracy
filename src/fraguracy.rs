@@ -1,5 +1,5 @@
-use ndarray::prelude::{Array, ArrayBase, ArrayView6};
-use ndarray::{Array6, ArrayViewMut6};
+use ndarray::prelude::Array;
+use ndarray::Array6;
 use rust_htslib::bam::Read;
 use rust_htslib::bam::{
     record::{Cigar, CigarStringView},
