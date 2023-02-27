@@ -6,14 +6,15 @@ use rust_htslib::bam::{
 };
 use rust_htslib::faidx;
 use std::collections::HashMap;
+use std::fmt;
 use std::rc::Rc;
 use std::str;
 
 pub(crate) struct Counts {
-    //  read, pos, mq, bp, ctx{6} */
     pub(crate) ibam: IndexedReader,
-    pub(crate) muts: Array6<u64>,
-    //  read, pos, mq, bp, ctx{2} */
+    //  read, f/r pos, mq, bp, ctx{6} */
+    pub(crate) errs: Array6<u64>,
+    //  read, f/r pos, mq, bp, ctx{2} */
     pub(crate) cnts: Array6<u64>,
     pub(crate) mismatches: u64,
     pub(crate) matches: u64,
@@ -23,13 +24,81 @@ fn argmax<T: Ord>(slice: &[T]) -> Option<usize> {
     (0..slice.len()).max_by_key(|i| &slice[*i])
 }
 
+pub(crate) struct Stat {
+    read12: u8,
+    fr: u8,
+    bq_bin: u8,
+    mq_bin: u8,
+    read_pos: u8,
+    context: [char; 2],
+    total_count: u64,
+    error_count: u64,
+}
+
+impl fmt::Display for Stat {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}\t{}\t{}\t{}\t{}\t{}{}\t{}\t{}",
+            self.read12,
+            self.fr,
+            self.bq_bin,
+            self.mq_bin,
+            self.read_pos,
+            self.context[0],
+            self.context[1],
+            self.total_count,
+            self.error_count
+        )
+    }
+}
+
+impl Stat {
+    pub(crate) fn header() -> String {
+        String::from("read12\tFR\tbq_bin\tmq_bin\tread_pos\tcontext\ttotal_count\terror_count")
+    }
+    pub(crate) fn from_counts(c: Counts) -> Vec<Stat> {
+        let mut stats = vec![];
+        for readi in 0..2usize {
+            for fri in 0..2usize {
+                for read_posi in 0..50usize {
+                    for bqi in 0..5usize {
+                        for mqi in 0..5usize {
+                            for ctx6i in 0..6usize {
+                                let err_i = c.errs[[readi, fri, read_posi, bqi, mqi, ctx6i]];
+
+                                // from ctx6i, we get the original context.
+                                let bases = CONTEXT6I_TO_CONTEXT2[&ctx6i];
+                                let ctx2i = Counts::base_to_ctx2(bases[0] as u8);
+
+                                let cnt_i = c.cnts[[readi, fri, read_posi, bqi, mqi, ctx2i]];
+                                stats.push(Stat {
+                                    read12: readi as u8,
+                                    fr: fri as u8,
+                                    bq_bin: bqi as u8,
+                                    mq_bin: mqi as u8,
+                                    read_pos: read_posi as u8,
+                                    context: bases,
+                                    total_count: cnt_i,
+                                    error_count: err_i,
+                                })
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        stats
+    }
+}
+
 impl Counts {
     pub(crate) fn new(ir: IndexedReader) -> Self {
         Counts {
             /*                         read1/2, F/R, pos, mq, bq, ctx */
             ibam: ir,
             cnts: Array::zeros((2, 2, 50, 5, 5, 2)),
-            muts: Array::zeros((2, 2, 50, 5, 5, 6)),
+            errs: Array::zeros((2, 2, 50, 5, 5, 6)),
             mismatches: 0,
             matches: 0,
         }
@@ -51,6 +120,11 @@ impl Counts {
             'A' | 'T' => 0,
             _ => 1,
         }
+    }
+
+    #[inline(always)]
+    fn ctx2_to_base(b: u8) -> char {
+        ['A', 'C'][b as usize]
     }
 
     pub(crate) fn increment<N: AsRef<str>>(
@@ -157,7 +231,7 @@ impl Counts {
                         index
                     };
 
-                    self.muts[err_index] += 1;
+                    self.errs[err_index] += 1;
 
                     log::debug!(
                         "gpos: {}, mm: {}, err:{}->{}, err-index:{:?}, ai: {}, bi: {}, {:?}",
@@ -239,6 +313,10 @@ lazy_static! {
         (('T' as u8, 'G' as u8), 5usize),
         (('A' as u8, 'C' as u8), 5usize),
     ]);
+    pub(crate) static ref CONTEXT6I_TO_CONTEXT2: HashMap<usize, [char; 2]> = CONTEXT_LOOKUP
+        .iter()
+        .map(|(k, v)| (*v, [(*k).0 as char, (*k).1 as char]))
+        .collect();
 }
 
 pub(crate) fn filter_read(r: &Rc<Record>) -> bool {

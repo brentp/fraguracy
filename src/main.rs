@@ -8,6 +8,8 @@ use rust_htslib::bam::{IndexedReader, Read, Reader};
 use rust_htslib::faidx;
 use rustc_hash::FxHashMap;
 
+use crate::fraguracy::Stat;
+
 use std::env;
 use std::str;
 
@@ -131,4 +133,9 @@ fn extract_main(path: PathBuf, fasta_path: Option<PathBuf>) {
         counts.mismatches,
         counts.matches,
     );
+
+    let stats = Stat::from_counts(counts);
+    let header = Stat::header();
+    println!("{header}");
+    stats.iter().for_each(|s| println!("{s}"));
 }
