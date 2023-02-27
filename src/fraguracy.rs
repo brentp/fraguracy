@@ -1,10 +1,10 @@
 use ndarray::prelude::Array;
 use ndarray::Array6;
-use rust_htslib::bam::Read;
 use rust_htslib::bam::{
     record::{Cigar, CigarStringView},
-    IndexedReader, Record,
+    IndexedReader, Read, Record,
 };
+use rust_htslib::faidx;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::str;
@@ -53,12 +53,14 @@ impl Counts {
         }
     }
 
-    pub(crate) fn increment(
+    pub(crate) fn increment<N: AsRef<str>>(
         &mut self,
         a: Rc<Record>,
         b: Rc<Record>,
         min_base_qual: u8,
         min_map_qual: u8,
+        fasta: &Option<faidx::Reader>,
+        chrom: N,
     ) {
         let pieces = overlap_pieces(a.cigar(), b.cigar(), false);
         if pieces.len() == 0 {
@@ -116,22 +118,30 @@ impl Counts {
                 self.matches += 1;
 
                 if a_base != b_base {
-                    // TODO: pileup and vote to determine error.
                     let genome_pos = g_chunk.start + (ai - a_chunk.start);
                     self.mismatches += 1;
-                    let base_counts = pile(
-                        &mut self.ibam,
-                        a.tid(),
-                        genome_pos,
-                        min_map_qual,
-                        min_base_qual,
-                    );
-                    let am = argmax(&base_counts).expect("error selecting maximum index");
-                    let max_base = ['A', 'C', 'G', 'T'][am];
-                    // TODO: check that the 2nd most common base is very low frequency, otherwise might be a het.
                     let mut err = ['A', 'C'];
 
-                    let err_index = if a_base == max_base as u8 {
+                    let real_base = if fasta.is_none() {
+                        let base_counts = pile(
+                            &mut self.ibam,
+                            a.tid(),
+                            genome_pos,
+                            min_map_qual,
+                            min_base_qual,
+                        );
+                        let am = argmax(&base_counts).expect("error selecting maximum index");
+                        // TODO: check that the 2nd most common base is very low frequency, otherwise might be a het.
+                        ['A', 'C', 'G', 'T'][am]
+                    } else {
+                        fasta
+                            .as_ref()
+                            .unwrap()
+                            .fetch_seq(&chrom, genome_pos as usize, genome_pos as usize)
+                            .expect("error extracting base")[0] as char
+                    };
+
+                    let err_index = if a_base == real_base as u8 {
                         // b is the error
                         let mut index = b_index;
                         index[5] = CONTEXT_LOOKUP[&(a_base, b_base)];
@@ -150,11 +160,12 @@ impl Counts {
                     self.muts[err_index] += 1;
 
                     log::debug!(
-                        "gpos: {}, mm: {}, base counts: ACGTN:{:?}, err:{}->{}, err-index:{:?}, ai: {}, bi: {}, {:?}",
+                        "gpos: {}, mm: {}, err:{}->{}, err-index:{:?}, ai: {}, bi: {}, {:?}",
                         genome_pos,
                         self.mismatches,
-                        base_counts,
-                        err[0], err[1],
+                        /* base_counts, */
+                        err[0],
+                        err[1],
                         err_index,
                         ai,
                         bi,

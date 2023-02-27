@@ -5,6 +5,7 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 use rust_htslib::bam::{IndexedReader, Read, Reader};
+use rust_htslib::faidx;
 use rustc_hash::FxHashMap;
 
 use std::env;
@@ -23,7 +24,10 @@ struct Cli {
 #[derive(Debug, Subcommand)]
 enum Commands {
     #[command(arg_required_else_help = true)]
-    Extract { bam: PathBuf },
+    Extract {
+        bam: PathBuf,
+        fasta: Option<PathBuf>,
+    },
 }
 
 fn main() {
@@ -34,11 +38,13 @@ fn main() {
     env_logger::init();
 
     match args.command {
-        Commands::Extract { bam } => extract_main(bam),
+        Commands::Extract { bam, fasta } => {
+            extract_main(bam, fasta);
+        }
     }
 }
 
-fn extract_main(path: PathBuf) {
+fn extract_main(path: PathBuf, fasta_path: Option<PathBuf>) {
     //let args: Vec<String> = env::args().collect();
     let mut map = FxHashMap::default();
     let min_base_qual = 10u8;
@@ -51,6 +57,19 @@ fn extract_main(path: PathBuf) {
         IndexedReader::from_path(&path).expect("bam file (path) must be sorted and indexed");
     ibam.set_threads(3)
         .expect("error setting threads on indexed reader");
+
+    let fasta: Option<faidx::Reader> = if let Some(fa_path) = fasta_path {
+        bam.set_reference(&fa_path)
+            .expect("Error setting reference for file");
+        ibam.set_reference(&fa_path)
+            .expect("Error setting reference for file");
+
+        let fa = faidx::Reader::from_path(fa_path).expect("error opening faidx");
+        Some(fa)
+    } else {
+        None
+    };
+
     let mut counts = fraguracy::Counts::new(ibam);
 
     let mut n_total = 0;
@@ -96,7 +115,8 @@ fn extract_main(path: PathBuf) {
                 if a.cigar().end_pos() < b.pos() {
                     return;
                 }
-                counts.increment(a, b, min_base_qual, min_map_q);
+                let tid = a.tid() as usize;
+                counts.increment(a, b, min_base_qual, min_map_q, &fasta, &chroms[tid]);
             } else {
                 log::warn!("not found: {:?}{:?}", name, b.pos());
             }
