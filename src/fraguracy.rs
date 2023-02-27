@@ -19,6 +19,10 @@ pub(crate) struct Counts {
     pub(crate) matches: u64,
 }
 
+fn argmax<T: Ord>(slice: &[T]) -> Option<usize> {
+    (0..slice.len()).max_by_key(|i| &slice[*i])
+}
+
 impl Counts {
     pub(crate) fn new(ir: IndexedReader) -> Self {
         Counts {
@@ -115,82 +119,114 @@ impl Counts {
                     // TODO: pileup and vote to determine error.
                     let genome_pos = g_chunk.start + (ai - a_chunk.start);
                     self.mismatches += 1;
-                    let mut base_counts: [u32; 5] = [0; 5];
+                    let base_counts = pile(
+                        &mut self.ibam,
+                        a.tid(),
+                        genome_pos,
+                        min_map_qual,
+                        min_base_qual,
+                    );
+                    let am = argmax(&base_counts).expect("error selecting maximum index");
+                    let max_base = ['A', 'C', 'G', 'T'][am];
+                    // TODO: check that the 2nd most common base is very low frequency, otherwise might be a het.
+                    let mut err = ['A', 'C'];
 
-                    self.ibam
-                        .fetch((a.tid(), genome_pos, genome_pos + 1))
-                        .expect("Error seeking to genomic position");
+                    let err_index = if a_base == max_base as u8 {
+                        // b is the error
+                        let mut index = b_index;
+                        index[5] = CONTEXT_LOOKUP[&(a_base, b_base)];
+                        err[0] = a_base as char;
+                        err[1] = b_base as char;
+                        index
+                    } else {
+                        // a is the error
+                        let mut index = a_index;
+                        index[5] = CONTEXT_LOOKUP[&(b_base, a_base)];
+                        err[0] = b_base as char;
+                        err[1] = a_base as char;
+                        index
+                    };
 
-                    let mut p = self.ibam.pileup();
-                    p.set_max_depth(100_000);
-                    p.filter(|col| col.as_ref().unwrap().pos() == genome_pos)
-                        .for_each(|col| {
-                            let col = col.unwrap();
+                    self.muts[err_index] += 1;
 
-                            col.alignments().for_each(|aln| {
-                                if let Some(qpos) = aln.qpos() {
-                                    let record = aln.record();
-                                    // here we want a accurate count, so we skip stuff at either
-                                    // end of a read (within 3 bases of end)
-                                    // along with low base-quality and low mapping-quality
-                                    if qpos < 3 || qpos > record.qual().len() - 4 {
-                                        return;
-                                    }
-                                    if record.mapq() < min_map_qual {
-                                        return;
-                                    }
-                                    if record.qual()[qpos] < min_base_qual {
-                                        return;
-                                    }
-                                    let base_idx = match aln.record().seq()[qpos] as char {
-                                        'A' => 0,
-                                        'C' => 1,
-                                        'G' => 2,
-                                        'T' => 3,
-                                        _ => 4,
-                                    };
-                                    base_counts[base_idx] += 1;
-                                }
-                            });
-                        });
-
-                    eprintln!(
-                        "gpos: {}, mm: {}, base counts: ACGTN:{:?}, ai: {}, bi: {}, {:?}",
+                    log::debug!(
+                        "gpos: {}, mm: {}, base counts: ACGTN:{:?}, err:{}->{}, err-index:{:?}, ai: {}, bi: {}, {:?}",
                         genome_pos,
                         self.mismatches,
                         base_counts,
+                        err[0], err[1],
+                        err_index,
                         ai,
                         bi,
                         unsafe { str::from_utf8_unchecked(a.qname()) },
                     );
-
-                    let index = [
-                        a.is_first_in_template() as usize,
-                        1 - (a.is_reverse() as usize),
-                        a_pos,
-                        amq as usize,
-                        aq as usize,
-                    ];
                 }
             }
         }
     }
 }
 
+fn pile(
+    ibam: &mut IndexedReader,
+    tid: i32,
+    genome_pos: u32,
+    min_map_qual: u8,
+    min_base_qual: u8,
+) -> [u32; 5] {
+    let mut base_counts: [u32; 5] = [0; 5];
+
+    ibam.fetch((tid, genome_pos, genome_pos + 1))
+        .expect("Error seeking to genomic position");
+
+    let mut p = ibam.pileup();
+    p.set_max_depth(100_000);
+    p.filter(|col| col.as_ref().unwrap().pos() == genome_pos)
+        .for_each(|col| {
+            let col = col.unwrap();
+
+            col.alignments().for_each(|aln| {
+                if let Some(qpos) = aln.qpos() {
+                    let record = aln.record();
+                    // here we want a accurate count, so we skip stuff at either
+                    // end of a read (within 3 bases of end)
+                    // along with low base-quality and low mapping-quality
+                    if qpos < 3 || qpos > record.qual().len() - 4 {
+                        return;
+                    }
+                    if record.mapq() < min_map_qual {
+                        return;
+                    }
+                    if record.qual()[qpos] < min_base_qual {
+                        return;
+                    }
+                    let base_idx = match aln.record().seq()[qpos] as char {
+                        'A' => 0,
+                        'C' => 1,
+                        'G' => 2,
+                        'T' => 3,
+                        _ => 4,
+                    };
+                    base_counts[base_idx] += 1;
+                }
+            });
+        });
+    return base_counts;
+}
+
 lazy_static! {
-    pub(crate) static ref CONTEXT_LOOKUP: HashMap<(u8, u8), u8> = HashMap::from([
-        (('C' as u8, 'A' as u8), 0u8),
-        (('G' as u8, 'T' as u8), 0u8),
-        (('C' as u8, 'G' as u8), 1u8),
-        (('G' as u8, 'C' as u8), 1u8),
-        (('C' as u8, 'T' as u8), 2u8),
-        (('G' as u8, 'A' as u8), 2u8),
-        (('T' as u8, 'A' as u8), 3u8),
-        (('A' as u8, 'T' as u8), 3u8),
-        (('T' as u8, 'C' as u8), 4u8),
-        (('A' as u8, 'G' as u8), 4u8),
-        (('T' as u8, 'G' as u8), 5u8),
-        (('A' as u8, 'C' as u8), 5u8),
+    pub(crate) static ref CONTEXT_LOOKUP: HashMap<(u8, u8), usize> = HashMap::from([
+        (('C' as u8, 'A' as u8), 0usize),
+        (('G' as u8, 'T' as u8), 0usize),
+        (('C' as u8, 'G' as u8), 1usize),
+        (('G' as u8, 'C' as u8), 1usize),
+        (('C' as u8, 'T' as u8), 2usize),
+        (('G' as u8, 'A' as u8), 2usize),
+        (('T' as u8, 'A' as u8), 3usize),
+        (('A' as u8, 'T' as u8), 3usize),
+        (('T' as u8, 'C' as u8), 4usize),
+        (('A' as u8, 'G' as u8), 4usize),
+        (('T' as u8, 'G' as u8), 5usize),
+        (('A' as u8, 'C' as u8), 5usize),
     ]);
 }
 

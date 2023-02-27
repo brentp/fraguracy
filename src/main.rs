@@ -2,6 +2,7 @@ mod fraguracy;
 #[macro_use]
 extern crate lazy_static;
 use clap::{Args, Parser, Subcommand};
+use log::{info, warn};
 use ndarray::prelude::Array;
 use ndarray::Array5;
 use std::path::PathBuf;
@@ -30,6 +31,10 @@ enum Commands {
 
 fn main() {
     let args = Cli::parse();
+    if env::var("RUST_LOG").is_err() {
+        env::set_var("RUST_LOG", "info")
+    }
+    env_logger::init();
 
     match args.command {
         Commands::Extract { bam } => extract_main(bam),
@@ -61,6 +66,7 @@ fn extract_main(path: PathBuf) {
         .map(|n| unsafe { str::from_utf8_unchecked(n) }.to_string())
         .collect();
 
+    let mut last_tid: i32 = 0;
     bam.rc_records()
         .map(|r| {
             n_total += 1;
@@ -71,6 +77,10 @@ fn extract_main(path: PathBuf) {
             let name = unsafe { str::from_utf8_unchecked(b.qname()) }.to_string();
             if b.is_first_in_template() {
                 n_pairs += 1;
+            }
+            if b.tid() != last_tid {
+                log::info!("processed chromosome: {}", chroms[last_tid as usize]);
+                last_tid = b.tid();
             }
 
             // by not checking the order here, we allow bams sorted by read name (with position flipped)
@@ -92,10 +102,10 @@ fn extract_main(path: PathBuf) {
                 }
                 counts.increment(a, b, min_base_qual, min_map_q);
             } else {
-                eprintln!("not found: {:?}{:?}", name, b.pos());
+                log::warn!("not found: {:?}{:?}", name, b.pos());
             }
         });
-    eprintln!(
+    log::info!(
         "[FINAL] map len:{:?} total: {:?}, bases-overlapping: {:?}, pairs: {}, counts: {:?} \
         \n mismatches: {} matches: {}",
         map.len(),

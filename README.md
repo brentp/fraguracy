@@ -5,6 +5,8 @@ often have a lot of bases with 'g' clustered. Just ignore?
 
 how to make pileup faster? do it and end when we have a list of variable sites?
 
+output list of untrustworthy sites where there is an error in > 1 read.
+
 
 # Fraguracy
 
