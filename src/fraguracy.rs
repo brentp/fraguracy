@@ -118,13 +118,9 @@ impl Counts {
     fn base_to_ctx2(b: u8) -> usize {
         match b as char {
             'A' | 'T' => 0,
-            _ => 1,
+            'C' | 'G' => 1,
+            _ => unreachable!(),
         }
-    }
-
-    #[inline(always)]
-    fn ctx2_to_base(b: u8) -> char {
-        ['A', 'C'][b as usize]
     }
 
     pub(crate) fn increment<N: AsRef<str>>(
@@ -168,7 +164,6 @@ impl Counts {
                 let b_pos = (bi / 3) as usize;
 
                 /*                         read1/2, F/R, pos, mq, bq, ctx */
-
                 let a_index = [
                     a.is_first_in_template() as usize,
                     1 - (a.is_reverse() as usize),
