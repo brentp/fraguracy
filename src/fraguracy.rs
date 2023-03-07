@@ -40,10 +40,10 @@ impl fmt::Display for Stat {
         write!(
             f,
             "{}\t{}\t{}\t{}\t{}\t{}{}\t{}\t{}",
-            self.read12,
-            self.fr,
-            self.bq_bin,
-            self.mq_bin,
+            ["r1", "r2"][self.read12 as usize],
+            ["f", "r"][self.fr as usize],
+            Q_LOOKUP[self.bq_bin as usize],
+            Q_LOOKUP[self.mq_bin as usize],
             self.read_pos,
             self.context[0],
             self.context[1],
@@ -174,8 +174,8 @@ impl Counts {
 
                 /*                         read1/2, F/R, pos, mq, bq, ctx */
                 let a_index = [
-                    a.is_first_in_template() as usize,
-                    1 - (a.is_reverse() as usize),
+                    1 - a.is_first_in_template() as usize,
+                    (a.is_reverse() as usize),
                     a_pos,
                     amq as usize,
                     aq as usize,
@@ -183,8 +183,8 @@ impl Counts {
                 ];
 
                 let b_index = [
-                    b.is_first_in_template() as usize,
-                    1 - (b.is_reverse() as usize),
+                    1 - b.is_first_in_template() as usize,
+                    (b.is_reverse() as usize),
                     b_pos,
                     bmq as usize,
                     bq as usize,
@@ -327,6 +327,7 @@ lazy_static! {
         .iter()
         .map(|(k, v)| (*v, [(*k).0 as char, (*k).1 as char]))
         .collect();
+    static ref Q_LOOKUP: [&'static str; 5] = ["0-5", "05-19", "20-39", "40-59", "60+"];
 }
 
 pub(crate) fn filter_read(r: &Rc<Record>) -> bool {
