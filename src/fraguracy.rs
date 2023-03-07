@@ -57,6 +57,7 @@ impl Stat {
     pub(crate) fn header() -> String {
         String::from("read12\tFR\tbq_bin\tmq_bin\tread_pos\tcontext\ttotal_count\terror_count")
     }
+
     pub(crate) fn from_counts(c: Counts) -> Vec<Stat> {
         let mut stats = vec![];
         for readi in 0..2usize {
@@ -103,6 +104,14 @@ impl Counts {
             matches: 0,
         }
     }
+
+    pub(crate) fn ctx6To2(a_base: char, b_base: char) -> u8 {
+        let ctx6i = CONTEXT_LOOKUP[&(a_base as u8, b_base as u8)];
+        let bases = CONTEXT6I_TO_CONTEXT2[&ctx6i];
+        let ctx2i = Counts::base_to_ctx2(bases[0] as u8);
+        return ctx2i as u8;
+    }
+
     #[inline(always)]
     fn qual_to_bin(q: u8) -> u8 {
         match q {
@@ -226,10 +235,13 @@ impl Counts {
                         index
                     };
 
+                    let base = Counts::ctx6To2(err[0], err[1]) as char;
+
                     self.errs[err_index] += 1;
+                    // TODO: brent check these make sense, run in debug mode
 
                     log::debug!(
-                        "gpos: {}, mm: {}, err:{}->{}, err-index:{:?}, ai: {}, bi: {}, {:?}",
+                        "gpos: {}, mm: {}, err:{}->{}, err-index:{:?}, ai: {}, bi: {}, {:?} (check) round-trip-base: {} (was {},{})",
                         genome_pos,
                         self.mismatches,
                         /* base_counts, */
@@ -239,6 +251,9 @@ impl Counts {
                         ai,
                         bi,
                         unsafe { str::from_utf8_unchecked(a.qname()) },
+                        base,
+                        a_base,
+                        b_base
                     );
                 }
             }
