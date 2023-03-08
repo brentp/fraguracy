@@ -12,7 +12,7 @@ use std::str;
 
 pub(crate) struct Counts {
     pub(crate) ibam: IndexedReader,
-    //  read, f/r pos, mq, bp, ctx{12} */
+    //  read, f/r pos, mq, bp, ctx{6} */
     pub(crate) errs: Array6<u64>,
     //  read, f/r pos, mq, bp, ctx{2} */
     pub(crate) cnts: Array6<u64>,
@@ -65,20 +65,20 @@ impl Stat {
                 for read_posi in 0..50usize {
                     for bqi in 0..5usize {
                         for mqi in 0..5usize {
-                            for ctx12i in 0..12usize {
-                                let n_err = c.errs[[readi, fri, read_posi, bqi, mqi, ctx12i]];
+                            for ctx6i in 0..6usize {
+                                let n_err = c.errs[[readi, fri, read_posi, bqi, mqi, ctx6i]];
 
                                 // from ctx6i, we get the original context.
-                                let bases = CONTEXT_TO_CONTEXT2[&ctx12i];
+                                let bases = CONTEXT_TO_CONTEXT2[&ctx6i];
 
-                                let ctx4i = Counts::base_to_ctx4(bases[0] as u8);
-                                let n_tot = c.cnts[[readi, fri, read_posi, bqi, mqi, ctx4i]];
+                                let ctx2i = Counts::base_to_ctx2(bases[0] as u8);
+                                let n_tot = c.cnts[[readi, fri, read_posi, bqi, mqi, ctx2i]];
                                 if n_tot < n_err {
                                     eprintln!(
-                                        "BAD: {ctx12i} -> {bases:?}. ctx4i:{ctx4i}",
-                                        ctx12i = ctx12i,
+                                        "BAD: {ctx6i} -> {bases:?}. ctx2i:{ctx2i}",
+                                        ctx6i = ctx6i,
                                         bases = bases,
-                                        ctx4i = ctx4i
+                                        ctx2i = ctx2i
                                     );
                                 }
 
@@ -107,8 +107,8 @@ impl Counts {
         Counts {
             /*                         read1/2, F/R, pos, mq, bq, ctx */
             ibam: ir,
-            cnts: Array::zeros((2, 2, 50, 5, 5, 4)),
-            errs: Array::zeros((2, 2, 50, 5, 5, 12)),
+            cnts: Array::zeros((2, 2, 50, 5, 5, 2)),
+            errs: Array::zeros((2, 2, 50, 5, 5, 6)),
             mismatches: 0,
             matches: 0,
         }
@@ -126,12 +126,10 @@ impl Counts {
     }
 
     #[inline(always)]
-    fn base_to_ctx4(b: u8) -> usize {
+    fn base_to_ctx2(b: u8) -> usize {
         match b as char {
-            'A' => 0,
-            'C' => 1,
-            'G' => 2,
-            'T' => 3,
+            'A' | 'T' => 0,
+            'C' | 'G' => 1,
             _ => unreachable!(),
         }
     }
@@ -185,7 +183,7 @@ impl Counts {
                     amq as usize,
                     aq as usize,
                     // NOTE that this could be an error so we might change this later if we learn a_base is an error
-                    Counts::base_to_ctx4(a_base),
+                    Counts::base_to_ctx2(a_base),
                 ];
 
                 let mut b_index = [
@@ -195,7 +193,7 @@ impl Counts {
                     bmq as usize,
                     bq as usize,
                     // NOTE that this could be an error so we might change this later if we learn b_base is an error
-                    Counts::base_to_ctx4(b_base),
+                    Counts::base_to_ctx2(b_base),
                 ];
 
                 if a_base == b_base {
@@ -330,17 +328,17 @@ fn pile(
 lazy_static! {
     pub(crate) static ref CONTEXT_LOOKUP: HashMap<(u8, u8), usize> = HashMap::from([
         (('C' as u8, 'A' as u8), 0usize),
-        (('G' as u8, 'T' as u8), 1usize),
-        (('C' as u8, 'G' as u8), 2usize),
-        (('G' as u8, 'C' as u8), 3usize),
-        (('C' as u8, 'T' as u8), 4usize),
-        (('G' as u8, 'A' as u8), 5usize),
-        (('T' as u8, 'A' as u8), 6usize),
-        (('A' as u8, 'T' as u8), 7usize),
-        (('T' as u8, 'C' as u8), 8usize),
-        (('A' as u8, 'G' as u8), 9usize),
-        (('T' as u8, 'G' as u8), 10usize),
-        (('A' as u8, 'C' as u8), 11usize),
+        (('G' as u8, 'T' as u8), 0usize),
+        (('C' as u8, 'G' as u8), 1usize),
+        (('G' as u8, 'C' as u8), 1usize),
+        (('C' as u8, 'T' as u8), 2usize),
+        (('G' as u8, 'A' as u8), 2usize),
+        (('T' as u8, 'A' as u8), 3usize),
+        (('A' as u8, 'T' as u8), 3usize),
+        (('T' as u8, 'C' as u8), 4usize),
+        (('A' as u8, 'G' as u8), 4usize),
+        (('T' as u8, 'G' as u8), 5usize),
+        (('A' as u8, 'C' as u8), 5usize),
     ]);
     pub(crate) static ref CONTEXT_TO_CONTEXT2: HashMap<usize, [char; 2]> = CONTEXT_LOOKUP
         .iter()
