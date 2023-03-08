@@ -66,13 +66,13 @@ impl Stat {
                     for bqi in 0..5usize {
                         for mqi in 0..5usize {
                             for ctx6i in 0..6usize {
-                                let err_i = c.errs[[readi, fri, read_posi, bqi, mqi, ctx6i]];
+                                let n_err = c.errs[[readi, fri, read_posi, bqi, mqi, ctx6i]];
 
                                 // from ctx6i, we get the original context.
                                 let bases = CONTEXT6I_TO_CONTEXT2[&ctx6i];
                                 let ctx2i = Counts::base_to_ctx2(bases[0] as u8);
 
-                                let cnt_i = c.cnts[[readi, fri, read_posi, bqi, mqi, ctx2i]];
+                                let n_tot = c.cnts[[readi, fri, read_posi, bqi, mqi, ctx2i]];
                                 stats.push(Stat {
                                     read12: readi as u8,
                                     fr: fri as u8,
@@ -80,8 +80,8 @@ impl Stat {
                                     mq_bin: mqi as u8,
                                     read_pos: read_posi as u8,
                                     context: bases,
-                                    total_count: cnt_i,
-                                    error_count: err_i,
+                                    total_count: n_tot,
+                                    error_count: n_err,
                                 })
                             }
                         }
@@ -103,13 +103,6 @@ impl Counts {
             mismatches: 0,
             matches: 0,
         }
-    }
-
-    pub(crate) fn ctx6To2(a_base: char, b_base: char) -> u8 {
-        let ctx6i = CONTEXT_LOOKUP[&(a_base as u8, b_base as u8)];
-        let bases = CONTEXT6I_TO_CONTEXT2[&ctx6i];
-        let ctx2i = Counts::base_to_ctx2(bases[0] as u8);
-        return ctx2i as u8;
     }
 
     #[inline(always)]
@@ -163,8 +156,9 @@ impl Counts {
                 if bq < min_base_qual {
                     continue;
                 }
-                let bq = Counts::qual_to_bin(bq);
+
                 let aq = Counts::qual_to_bin(aq);
+                let bq = Counts::qual_to_bin(bq);
 
                 let a_base = unsafe { a_seq.decoded_base_unchecked(ai as usize) };
                 let b_base = unsafe { b_seq.decoded_base_unchecked(bi as usize) };
@@ -174,8 +168,8 @@ impl Counts {
 
                 /*                         read1/2, F/R, pos, mq, bq, ctx */
                 let a_index = [
-                    1 - a.is_first_in_template() as usize,
-                    (a.is_reverse() as usize),
+                    1 - a.is_first_in_template() as usize, // 0 r1
+                    (a.is_reverse() as usize),             //
                     a_pos,
                     amq as usize,
                     aq as usize,
@@ -198,7 +192,7 @@ impl Counts {
                 if a_base != b_base {
                     let genome_pos = g_chunk.start + (ai - a_chunk.start);
                     self.mismatches += 1;
-                    let mut err = ['A', 'C'];
+                    let mut err = ['X', 'X'];
 
                     let real_base = if fasta.is_none() {
                         let base_counts = pile(
@@ -226,16 +220,19 @@ impl Counts {
                         err[0] = a_base as char;
                         err[1] = b_base as char;
                         index
-                    } else {
+                    } else if b_base == real_base as u8 {
                         // a is the error
                         let mut index = a_index;
                         index[5] = CONTEXT_LOOKUP[&(b_base, a_base)];
                         err[0] = b_base as char;
                         err[1] = a_base as char;
                         index
+                    } else {
+                        // can't determine which is error base.
+                        continue;
                     };
 
-                    let base = Counts::ctx6To2(err[0], err[1]) as char;
+                    let bases = CONTEXT6I_TO_CONTEXT2[&err_index[5]];
 
                     self.errs[err_index] += 1;
                     // TODO: brent check these make sense, run in debug mode
@@ -251,9 +248,9 @@ impl Counts {
                         ai,
                         bi,
                         unsafe { str::from_utf8_unchecked(a.qname()) },
-                        base,
-                        a_base,
-                        b_base
+                        bases[0],
+                        err[0],
+                        err[1],
                     );
                 }
             }
@@ -294,7 +291,7 @@ fn pile(
                     if record.qual()[qpos] < min_base_qual {
                         return;
                     }
-                    let base_idx = match aln.record().seq()[qpos] as char {
+                    let base_idx = match record.seq()[qpos] as char {
                         'A' => 0,
                         'C' => 1,
                         'G' => 2,
@@ -325,7 +322,13 @@ lazy_static! {
     ]);
     pub(crate) static ref CONTEXT6I_TO_CONTEXT2: HashMap<usize, [char; 2]> = CONTEXT_LOOKUP
         .iter()
-        .map(|(k, v)| (*v, [(*k).0 as char, (*k).1 as char]))
+        .map(|(k, v)| (
+            *v,
+            [
+                ['A', 'C'][Counts::base_to_ctx2((*k).0)],
+                ['T', 'G'][Counts::base_to_ctx2((*k).1)],
+            ]
+        ))
         .collect();
     static ref Q_LOOKUP: [&'static str; 5] = ["0-5", "05-19", "20-39", "40-59", "60+"];
 }
