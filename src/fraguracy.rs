@@ -12,7 +12,7 @@ use std::str;
 
 pub(crate) struct Counts {
     pub(crate) ibam: IndexedReader,
-    //  read, f/r pos, mq, bp, ctx{6} */
+    //  read, f/r pos, mq, bp, ctx{12} */
     pub(crate) errs: Array6<u64>,
     //  read, f/r pos, mq, bp, ctx{2} */
     pub(crate) cnts: Array6<u64>,
@@ -65,14 +65,23 @@ impl Stat {
                 for read_posi in 0..50usize {
                     for bqi in 0..5usize {
                         for mqi in 0..5usize {
-                            for ctx6i in 0..6usize {
-                                let n_err = c.errs[[readi, fri, read_posi, bqi, mqi, ctx6i]];
+                            for ctx12i in 0..12usize {
+                                let n_err = c.errs[[readi, fri, read_posi, bqi, mqi, ctx12i]];
 
                                 // from ctx6i, we get the original context.
-                                let bases = CONTEXT6I_TO_CONTEXT2[&ctx6i];
-                                let ctx2i = Counts::base_to_ctx2(bases[0] as u8);
+                                let bases = CONTEXT_TO_CONTEXT2[&ctx12i];
 
-                                let n_tot = c.cnts[[readi, fri, read_posi, bqi, mqi, ctx2i]];
+                                let ctx4i = Counts::base_to_ctx4(bases[0] as u8);
+                                let n_tot = c.cnts[[readi, fri, read_posi, bqi, mqi, ctx4i]];
+                                if n_tot < n_err {
+                                    eprintln!(
+                                        "BAD: {ctx12i} -> {bases:?}. ctx4i:{ctx4i}",
+                                        ctx12i = ctx12i,
+                                        bases = bases,
+                                        ctx4i = ctx4i
+                                    );
+                                }
+
                                 stats.push(Stat {
                                     read12: readi as u8,
                                     fr: fri as u8,
@@ -98,8 +107,8 @@ impl Counts {
         Counts {
             /*                         read1/2, F/R, pos, mq, bq, ctx */
             ibam: ir,
-            cnts: Array::zeros((2, 2, 50, 5, 5, 2)),
-            errs: Array::zeros((2, 2, 50, 5, 5, 6)),
+            cnts: Array::zeros((2, 2, 50, 5, 5, 4)),
+            errs: Array::zeros((2, 2, 50, 5, 5, 12)),
             mismatches: 0,
             matches: 0,
         }
@@ -117,10 +126,12 @@ impl Counts {
     }
 
     #[inline(always)]
-    fn base_to_ctx2(b: u8) -> usize {
+    fn base_to_ctx4(b: u8) -> usize {
         match b as char {
-            'A' | 'T' => 0,
-            'C' | 'G' => 1,
+            'A' => 0,
+            'C' => 1,
+            'G' => 2,
+            'T' => 3,
             _ => unreachable!(),
         }
     }
@@ -167,27 +178,34 @@ impl Counts {
                 let b_pos = (bi / 3) as usize;
 
                 /*                         read1/2, F/R, pos, mq, bq, ctx */
-                let a_index = [
+                let mut a_index = [
                     1 - a.is_first_in_template() as usize, // 0 r1
                     (a.is_reverse() as usize),             //
                     a_pos,
                     amq as usize,
                     aq as usize,
-                    Counts::base_to_ctx2(a_base),
+                    // NOTE that this could be an error so we might change this later if we learn a_base is an error
+                    Counts::base_to_ctx4(a_base),
                 ];
 
-                let b_index = [
+                let mut b_index = [
                     1 - b.is_first_in_template() as usize,
                     (b.is_reverse() as usize),
                     b_pos,
                     bmq as usize,
                     bq as usize,
-                    Counts::base_to_ctx2(b_base),
+                    // NOTE that this could be an error so we might change this later if we learn b_base is an error
+                    Counts::base_to_ctx4(b_base),
                 ];
 
-                self.cnts[a_index] += 1;
-                self.cnts[b_index] += 1;
-                self.matches += 1;
+                if a_base == b_base {
+                    // fast path to increment separately here because we must do some extra stuff to error base before incrementing count
+                    // if there is an error.
+                    self.cnts[a_index] += 1;
+                    self.cnts[b_index] += 1;
+                    self.matches += 1;
+                    continue;
+                }
 
                 if a_base != b_base {
                     let genome_pos = g_chunk.start + (ai - a_chunk.start);
@@ -216,6 +234,7 @@ impl Counts {
                     let err_index = if a_base == real_base as u8 {
                         // b is the error
                         let mut index = b_index;
+                        b_index[5] = a_index[5]; // we correct this because we want to track the true base
                         index[5] = CONTEXT_LOOKUP[&(a_base, b_base)];
                         err[0] = a_base as char;
                         err[1] = b_base as char;
@@ -223,6 +242,7 @@ impl Counts {
                     } else if b_base == real_base as u8 {
                         // a is the error
                         let mut index = a_index;
+                        a_index[5] = b_index[5]; // we correct this because we want to track the true base
                         index[5] = CONTEXT_LOOKUP[&(b_base, a_base)];
                         err[0] = b_base as char;
                         err[1] = a_base as char;
@@ -232,7 +252,9 @@ impl Counts {
                         continue;
                     };
 
-                    let bases = CONTEXT6I_TO_CONTEXT2[&err_index[5]];
+                    let bases = CONTEXT_TO_CONTEXT2[&err_index[5]];
+                    self.cnts[a_index] += 1;
+                    self.cnts[b_index] += 1;
 
                     self.errs[err_index] += 1;
                     // TODO: brent check these make sense, run in debug mode
@@ -308,27 +330,21 @@ fn pile(
 lazy_static! {
     pub(crate) static ref CONTEXT_LOOKUP: HashMap<(u8, u8), usize> = HashMap::from([
         (('C' as u8, 'A' as u8), 0usize),
-        (('G' as u8, 'T' as u8), 0usize),
-        (('C' as u8, 'G' as u8), 1usize),
-        (('G' as u8, 'C' as u8), 1usize),
-        (('C' as u8, 'T' as u8), 2usize),
-        (('G' as u8, 'A' as u8), 2usize),
-        (('T' as u8, 'A' as u8), 3usize),
-        (('A' as u8, 'T' as u8), 3usize),
-        (('T' as u8, 'C' as u8), 4usize),
-        (('A' as u8, 'G' as u8), 4usize),
-        (('T' as u8, 'G' as u8), 5usize),
-        (('A' as u8, 'C' as u8), 5usize),
+        (('G' as u8, 'T' as u8), 1usize),
+        (('C' as u8, 'G' as u8), 2usize),
+        (('G' as u8, 'C' as u8), 3usize),
+        (('C' as u8, 'T' as u8), 4usize),
+        (('G' as u8, 'A' as u8), 5usize),
+        (('T' as u8, 'A' as u8), 6usize),
+        (('A' as u8, 'T' as u8), 7usize),
+        (('T' as u8, 'C' as u8), 8usize),
+        (('A' as u8, 'G' as u8), 9usize),
+        (('T' as u8, 'G' as u8), 10usize),
+        (('A' as u8, 'C' as u8), 11usize),
     ]);
-    pub(crate) static ref CONTEXT6I_TO_CONTEXT2: HashMap<usize, [char; 2]> = CONTEXT_LOOKUP
+    pub(crate) static ref CONTEXT_TO_CONTEXT2: HashMap<usize, [char; 2]> = CONTEXT_LOOKUP
         .iter()
-        .map(|(k, v)| (
-            *v,
-            [
-                ['A', 'C'][Counts::base_to_ctx2((*k).0)],
-                ['T', 'G'][Counts::base_to_ctx2((*k).1)],
-            ]
-        ))
+        .map(|(k, v)| (*v, [(*k).0 as char, (*k).1 as char]))
         .collect();
     static ref Q_LOOKUP: [&'static str; 5] = ["0-5", "05-19", "20-39", "40-59", "60+"];
 }
