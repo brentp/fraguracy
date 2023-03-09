@@ -69,7 +69,7 @@ impl Stat {
                                 let n_err = c.errs[[readi, fri, read_posi, bqi, mqi, ctx6i]];
 
                                 // from ctx6i, we get the original context.
-                                let bases = CONTEXT_TO_CONTEXT2[&ctx6i];
+                                let bases = CONTEXT_TO_CONTEXT2[ctx6i];
 
                                 let ctx2i = Counts::base_to_ctx2(bases[0] as u8);
                                 let n_tot = c.cnts[[readi, fri, read_posi, bqi, mqi, ctx2i]];
@@ -250,7 +250,7 @@ impl Counts {
                         continue;
                     };
 
-                    let bases = CONTEXT_TO_CONTEXT2[&err_index[5]];
+                    let bases = CONTEXT_TO_CONTEXT2[err_index[5]];
                     self.cnts[a_index] += 1;
                     self.cnts[b_index] += 1;
 
@@ -327,23 +327,27 @@ fn pile(
 
 lazy_static! {
     pub(crate) static ref CONTEXT_LOOKUP: HashMap<(u8, u8), usize> = HashMap::from([
-        (('C' as u8, 'A' as u8), 0usize),
-        (('G' as u8, 'T' as u8), 0usize),
-        (('C' as u8, 'G' as u8), 1usize),
-        (('G' as u8, 'C' as u8), 1usize),
-        (('C' as u8, 'T' as u8), 2usize),
-        (('G' as u8, 'A' as u8), 2usize),
-        (('T' as u8, 'A' as u8), 3usize),
-        (('A' as u8, 'T' as u8), 3usize),
-        (('T' as u8, 'C' as u8), 4usize),
-        (('A' as u8, 'G' as u8), 4usize),
-        (('T' as u8, 'G' as u8), 5usize),
-        (('A' as u8, 'C' as u8), 5usize),
+        (('T' as u8, 'G' as u8), 0usize),
+        (('A' as u8, 'C' as u8), 0usize),
+        (('T' as u8, 'C' as u8), 1usize),
+        (('A' as u8, 'G' as u8), 1usize),
+        (('T' as u8, 'A' as u8), 2usize),
+        (('A' as u8, 'T' as u8), 2usize),
+        (('C' as u8, 'A' as u8), 3usize),
+        (('G' as u8, 'T' as u8), 3usize),
+        (('C' as u8, 'G' as u8), 4usize),
+        (('G' as u8, 'C' as u8), 4usize),
+        (('C' as u8, 'T' as u8), 5usize),
+        (('G' as u8, 'A' as u8), 5usize),
     ]);
-    pub(crate) static ref CONTEXT_TO_CONTEXT2: HashMap<usize, [char; 2]> = CONTEXT_LOOKUP
-        .iter()
-        .map(|(k, v)| (*v, [(*k).0 as char, (*k).1 as char]))
-        .collect();
+    pub(crate) static ref CONTEXT_TO_CONTEXT2: [[char; 2]; 6] = [
+        ['A', 'C'],
+        ['A', 'G'],
+        ['A', 'T'],
+        ['C', 'A'],
+        ['C', 'G'],
+        ['C', 'T']
+    ];
     static ref Q_LOOKUP: [&'static str; 5] = ["0-5", "05-19", "20-39", "40-59", "60+"];
 }
 
