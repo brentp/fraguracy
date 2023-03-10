@@ -58,14 +58,14 @@ impl Stat {
         String::from("read12\tFR\tbq_bin\tmq_bin\tread_pos\tcontext\ttotal_count\terror_count")
     }
 
-    pub(crate) fn from_counts(c: Counts) -> Vec<Stat> {
+    pub(crate) fn from_counts(c: Counts, bin_size: usize) -> Vec<Stat> {
         let mut stats = vec![];
-        for readi in 0..2usize {
-            for fri in 0..2usize {
-                for read_posi in 0..50usize {
-                    for bqi in 0..5usize {
-                        for mqi in 0..5usize {
-                            for ctx6i in 0..6usize {
+        for readi in 0..c.cnts.shape()[0] {
+            for fri in 0..c.cnts.shape()[1] {
+                for read_posi in 0..c.cnts.shape()[2] {
+                    for bqi in 0..c.cnts.shape()[3] {
+                        for mqi in 0..c.cnts.shape()[4] {
+                            for ctx6i in 0..c.errs.shape()[5] {
                                 let n_err = c.errs[[readi, fri, read_posi, bqi, mqi, ctx6i]];
 
                                 // from ctx6i, we get the original context.
@@ -87,7 +87,7 @@ impl Stat {
                                     fr: fri as u8,
                                     bq_bin: bqi as u8,
                                     mq_bin: mqi as u8,
-                                    read_pos: read_posi as u8,
+                                    read_pos: (read_posi * bin_size) as u8,
                                     context: bases,
                                     total_count: n_tot,
                                     error_count: n_err,
@@ -103,12 +103,12 @@ impl Stat {
 }
 
 impl Counts {
-    pub(crate) fn new(ir: IndexedReader) -> Self {
+    pub(crate) fn new(ir: IndexedReader, bins: usize) -> Self {
         Counts {
             /*                         read1/2, F/R, pos, mq, bq, ctx */
             ibam: ir,
-            cnts: Array::zeros((2, 2, 50, 5, 5, 2)),
-            errs: Array::zeros((2, 2, 50, 5, 5, 6)),
+            cnts: Array::zeros((2, 2, bins, 5, 5, 2)),
+            errs: Array::zeros((2, 2, bins, 5, 5, 6)),
             mismatches: 0,
             matches: 0,
         }
@@ -140,6 +140,7 @@ impl Counts {
         b: Rc<Record>,
         min_base_qual: u8,
         min_map_qual: u8,
+        bin_size: u32,
         fasta: &Option<faidx::Reader>,
         chrom: N,
     ) {
@@ -172,14 +173,14 @@ impl Counts {
                 let a_base = unsafe { a_seq.decoded_base_unchecked(ai as usize) };
                 let b_base = unsafe { b_seq.decoded_base_unchecked(bi as usize) };
 
-                let a_pos = (ai / 3) as usize;
-                let b_pos = (bi / 3) as usize;
+                let a_bin = (ai / bin_size) as usize;
+                let b_bin = (bi / bin_size) as usize;
 
                 /*                         read1/2, F/R, pos, mq, bq, ctx */
                 let mut a_index = [
                     1 - a.is_first_in_template() as usize, // 0 r1
                     (a.is_reverse() as usize),             //
-                    a_pos,
+                    a_bin,
                     amq as usize,
                     aq as usize,
                     // NOTE that this could be an error so we might change this later if we learn a_base is an error
@@ -189,7 +190,7 @@ impl Counts {
                 let mut b_index = [
                     1 - b.is_first_in_template() as usize,
                     (b.is_reverse() as usize),
-                    b_pos,
+                    b_bin,
                     bmq as usize,
                     bq as usize,
                     // NOTE that this could be an error so we might change this later if we learn b_base is an error
@@ -211,7 +212,7 @@ impl Counts {
                     let mut err = ['X', 'X'];
 
                     let real_base = if fasta.is_none() {
-                        let base_counts = pile(
+                        let mut base_counts = pile(
                             &mut self.ibam,
                             a.tid(),
                             genome_pos,
@@ -219,7 +220,17 @@ impl Counts {
                             min_base_qual,
                         );
                         let am = argmax(&base_counts).expect("error selecting maximum index");
-                        // TODO: check that the 2nd most common base is very low frequency, otherwise might be a het.
+                        // check that the 2nd most common base is very low frequency, otherwise might be a het.
+                        base_counts.sort();
+                        let cmax = base_counts[4];
+                        // if 3nd most common base is more than 50% of first, then we don't know which is right.
+                        if base_counts[3] as f64 / cmax as f64 > 0.5 {
+                            log::info!(
+                                "skipping due to unknown truth given base_counts {:?}",
+                                base_counts
+                            );
+                            continue;
+                        }
                         ['A', 'C', 'G', 'T'][am]
                     } else {
                         fasta
@@ -258,7 +269,7 @@ impl Counts {
                     // TODO: brent check these make sense, run in debug mode
 
                     log::debug!(
-                        "gpos: {}, mm: {}, err:{}->{}, err-index:{:?}, ai: {}, bi: {}, {:?} (check) round-trip-base: {} (was {},{})",
+                        "gpos: {}, mm: {}, err:{}->{}, err-index:{:?}, ai: {}, bi: {}, {:?} (check) round-trip-base: {} (was {},{}) {:?}",
                         genome_pos,
                         self.mismatches,
                         /* base_counts, */
@@ -271,6 +282,7 @@ impl Counts {
                         bases[0],
                         err[0],
                         err[1],
+                        fasta,
                     );
                 }
             }

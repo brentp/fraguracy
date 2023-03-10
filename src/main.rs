@@ -29,6 +29,10 @@ enum Commands {
     Extract {
         bam: PathBuf,
         fasta: Option<PathBuf>,
+        #[arg(short, long, default_value_t = 150)]
+        max_read_length: u8,
+        #[arg(short, long, default_value_t = 3)]
+        bin_size: u8,
     },
 }
 
@@ -40,13 +44,18 @@ fn main() {
     env_logger::init();
 
     match args.command {
-        Commands::Extract { bam, fasta } => {
-            extract_main(bam, fasta);
+        Commands::Extract {
+            bam,
+            fasta,
+            bin_size,
+            max_read_length,
+        } => {
+            extract_main(bam, fasta, bin_size as u32, max_read_length as u32);
         }
     }
 }
 
-fn extract_main(path: PathBuf, fasta_path: Option<PathBuf>) {
+fn extract_main(path: PathBuf, fasta_path: Option<PathBuf>, bin_size: u32, max_read_length: u32) {
     //let args: Vec<String> = env::args().collect();
     let mut map = FxHashMap::default();
     let min_base_qual = 10u8;
@@ -72,7 +81,8 @@ fn extract_main(path: PathBuf, fasta_path: Option<PathBuf>) {
         None
     };
 
-    let mut counts = fraguracy::Counts::new(ibam);
+    let bins = max_read_length / bin_size;
+    let mut counts = fraguracy::Counts::new(ibam, bins as usize);
 
     let mut n_total = 0;
     let mut n_pairs = 0;
@@ -118,7 +128,15 @@ fn extract_main(path: PathBuf, fasta_path: Option<PathBuf>) {
                     return;
                 }
                 let tid = a.tid() as usize;
-                counts.increment(a, b, min_base_qual, min_map_q, &fasta, &chroms[tid]);
+                counts.increment(
+                    a,
+                    b,
+                    min_base_qual,
+                    min_map_q,
+                    bin_size,
+                    &fasta,
+                    &chroms[tid],
+                );
             } else {
                 log::warn!("not found: {:?}{:?}", name, b.pos());
             }
@@ -134,7 +152,7 @@ fn extract_main(path: PathBuf, fasta_path: Option<PathBuf>) {
         counts.matches,
     );
 
-    let stats = Stat::from_counts(counts);
+    let stats = Stat::from_counts(counts, bin_size as usize);
     let header = Stat::header();
     println!("{header}");
     stats.iter().for_each(|s| println!("{s}"));
