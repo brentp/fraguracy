@@ -29,10 +29,27 @@ enum Commands {
     Extract {
         bam: PathBuf,
         fasta: Option<PathBuf>,
-        #[arg(short, long, default_value_t = 150)]
+        #[arg(
+            short,
+            long,
+            default_value_t = 150,
+            help = "indicate the maximum read length in the alignment file"
+        )]
         max_read_length: u8,
-        #[arg(short, long, default_value_t = 3)]
+        #[arg(
+            short,
+            long,
+            default_value_t = 3,
+            help = "parition the read into chunks/bins of this size"
+        )]
         bin_size: u8,
+        #[arg(
+            short = 'Q',
+            long,
+            default_value_t = 50,
+            help = "only consider pairs where both reads have this mapping-quality or higher (good to leave this high)"
+        )]
+        min_mapping_quality: u8,
     },
 }
 
@@ -49,17 +66,29 @@ fn main() {
             fasta,
             bin_size,
             max_read_length,
+            min_mapping_quality,
         } => {
-            extract_main(bam, fasta, bin_size as u32, max_read_length as u32);
+            extract_main(
+                bam,
+                fasta,
+                bin_size as u32,
+                max_read_length as u32,
+                min_mapping_quality,
+            );
         }
     }
 }
 
-fn extract_main(path: PathBuf, fasta_path: Option<PathBuf>, bin_size: u32, max_read_length: u32) {
+fn extract_main(
+    path: PathBuf,
+    fasta_path: Option<PathBuf>,
+    bin_size: u32,
+    max_read_length: u32,
+    min_mapping_quality: u8,
+) {
     //let args: Vec<String> = env::args().collect();
     let mut map = FxHashMap::default();
     let min_base_qual = 10u8;
-    let min_map_q = 10u8;
 
     let mut bam = Reader::from_path(&path).expect("error reading bam file {path}");
     bam.set_threads(3).expect("error setting threads");
@@ -117,10 +146,10 @@ fn extract_main(path: PathBuf, fasta_path: Option<PathBuf>, bin_size: u32, max_r
                 assert!(!map.contains_key(&name));
                 map.insert(name, b.clone());
             } else if let Some(a) = map.remove(&name) {
-                if a.mapq() < min_map_q {
+                if a.mapq() < min_mapping_quality {
                     return;
                 }
-                if b.mapq() < min_map_q {
+                if b.mapq() < min_mapping_quality {
                     return;
                 }
                 // we know a is before b, but we don't know if they overlap.
@@ -132,7 +161,7 @@ fn extract_main(path: PathBuf, fasta_path: Option<PathBuf>, bin_size: u32, max_r
                     a,
                     b,
                     min_base_qual,
-                    min_map_q,
+                    min_mapping_quality,
                     bin_size,
                     &fasta,
                     &chroms[tid],
