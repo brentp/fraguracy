@@ -1,5 +1,5 @@
 use ndarray::prelude::Array;
-use ndarray::Array6;
+use ndarray::Array5;
 use rust_htslib::bam::{
     record::{Cigar, CigarStringView},
     IndexedReader, Read, Record,
@@ -13,9 +13,9 @@ use std::str;
 pub(crate) struct Counts {
     pub(crate) ibam: IndexedReader,
     //  read, f/r pos, mq, bp, ctx{6} */
-    pub(crate) errs: Array6<u64>,
+    pub(crate) errs: Array5<u64>,
     //  read, f/r pos, mq, bp, ctx{2} */
-    pub(crate) cnts: Array6<u64>,
+    pub(crate) cnts: Array5<u64>,
     pub(crate) mismatches: u64,
     pub(crate) matches: u64,
 }
@@ -28,7 +28,6 @@ pub(crate) struct Stat {
     read12: u8,
     fr: u8,
     bq_bin: u8,
-    mq_bin: u8,
     read_pos: u8,
     context: [char; 2],
     total_count: u64,
@@ -39,11 +38,10 @@ impl fmt::Display for Stat {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "{}\t{}\t{}\t{}\t{}\t{}{}\t{}\t{}",
+            "{}\t{}\t{}\t{}\t{}{}\t{}\t{}",
             ["r1", "r2"][self.read12 as usize],
             ["f", "r"][self.fr as usize],
             Q_LOOKUP[self.bq_bin as usize],
-            Q_LOOKUP[self.mq_bin as usize],
             self.read_pos,
             self.context[0],
             self.context[1],
@@ -55,7 +53,7 @@ impl fmt::Display for Stat {
 
 impl Stat {
     pub(crate) fn header() -> String {
-        String::from("read12\tFR\tbq_bin\tmq_bin\tread_pos\tcontext\ttotal_count\terror_count")
+        String::from("read12\tFR\tbq_bin\tread_pos\tcontext\ttotal_count\terror_count")
     }
 
     pub(crate) fn from_counts(c: Counts, bin_size: usize) -> Vec<Stat> {
@@ -64,35 +62,32 @@ impl Stat {
             for fri in 0..c.cnts.shape()[1] {
                 for read_posi in 0..c.cnts.shape()[2] {
                     for bqi in 0..c.cnts.shape()[3] {
-                        for mqi in 0..c.cnts.shape()[4] {
-                            for ctx6i in 0..c.errs.shape()[5] {
-                                let n_err = c.errs[[readi, fri, read_posi, bqi, mqi, ctx6i]];
+                        for ctx6i in 0..c.errs.shape()[4] {
+                            let n_err = c.errs[[readi, fri, read_posi, bqi, ctx6i]];
 
-                                // from ctx6i, we get the original context.
-                                let bases = CONTEXT_TO_CONTEXT2[ctx6i];
+                            // from ctx6i, we get the original context.
+                            let bases = CONTEXT_TO_CONTEXT2[ctx6i];
 
-                                let ctx2i = Counts::base_to_ctx2(bases[0] as u8);
-                                let n_tot = c.cnts[[readi, fri, read_posi, bqi, mqi, ctx2i]];
-                                if n_tot < n_err {
-                                    eprintln!(
-                                        "BAD: {ctx6i} -> {bases:?}. ctx2i:{ctx2i}",
-                                        ctx6i = ctx6i,
-                                        bases = bases,
-                                        ctx2i = ctx2i
-                                    );
-                                }
-
-                                stats.push(Stat {
-                                    read12: readi as u8,
-                                    fr: fri as u8,
-                                    bq_bin: bqi as u8,
-                                    mq_bin: mqi as u8,
-                                    read_pos: (read_posi * bin_size) as u8,
-                                    context: bases,
-                                    total_count: n_tot,
-                                    error_count: n_err,
-                                })
+                            let ctx2i = Counts::base_to_ctx2(bases[0] as u8);
+                            let n_tot = c.cnts[[readi, fri, read_posi, bqi, ctx2i]];
+                            if n_tot < n_err {
+                                eprintln!(
+                                    "BAD: {ctx6i} -> {bases:?}. ctx2i:{ctx2i}",
+                                    ctx6i = ctx6i,
+                                    bases = bases,
+                                    ctx2i = ctx2i
+                                );
                             }
+
+                            stats.push(Stat {
+                                read12: readi as u8,
+                                fr: fri as u8,
+                                bq_bin: bqi as u8,
+                                read_pos: (read_posi * bin_size) as u8,
+                                context: bases,
+                                total_count: n_tot,
+                                error_count: n_err,
+                            })
                         }
                     }
                 }
@@ -105,10 +100,10 @@ impl Stat {
 impl Counts {
     pub(crate) fn new(ir: IndexedReader, bins: usize) -> Self {
         Counts {
-            /*                         read1/2, F/R, pos, mq, bq, ctx */
+            /*                         read1/2, F/R, pos, bq, ctx */
             ibam: ir,
-            cnts: Array::zeros((2, 2, bins, 5, 5, 2)),
-            errs: Array::zeros((2, 2, bins, 5, 5, 6)),
+            cnts: Array::zeros((2, 2, bins, 5, 2)),
+            errs: Array::zeros((2, 2, bins, 5, 6)),
             mismatches: 0,
             matches: 0,
         }
@@ -152,8 +147,6 @@ impl Counts {
         let b_seq = b.seq();
         let a_qual = a.qual();
         let b_qual = b.qual();
-        let amq = Counts::qual_to_bin(a.mapq());
-        let bmq = Counts::qual_to_bin(b.mapq());
 
         for [a_chunk, b_chunk, g_chunk] in pieces {
             for (ai, bi) in std::iter::zip(a_chunk.start..a_chunk.stop, b_chunk.start..b_chunk.stop)
@@ -181,7 +174,6 @@ impl Counts {
                     1 - a.is_first_in_template() as usize, // 0 r1
                     (a.is_reverse() as usize),             //
                     a_bin,
-                    amq as usize,
                     aq as usize,
                     // NOTE that this could be an error so we might change this later if we learn a_base is an error
                     Counts::base_to_ctx2(a_base),
@@ -191,7 +183,6 @@ impl Counts {
                     1 - b.is_first_in_template() as usize,
                     (b.is_reverse() as usize),
                     b_bin,
-                    bmq as usize,
                     bq as usize,
                     // NOTE that this could be an error so we might change this later if we learn b_base is an error
                     Counts::base_to_ctx2(b_base),
@@ -243,16 +234,16 @@ impl Counts {
                     let err_index = if a_base == real_base as u8 {
                         // b is the error
                         let mut index = b_index;
-                        b_index[5] = a_index[5]; // we correct this because we want to track the true base
-                        index[5] = CONTEXT_LOOKUP[&(a_base, b_base)];
+                        b_index[4] = a_index[4]; // we correct this because we want to track the true base
+                        index[4] = CONTEXT_LOOKUP[&(a_base, b_base)];
                         err[0] = a_base as char;
                         err[1] = b_base as char;
                         index
                     } else if b_base == real_base as u8 {
                         // a is the error
                         let mut index = a_index;
-                        a_index[5] = b_index[5]; // we correct this because we want to track the true base
-                        index[5] = CONTEXT_LOOKUP[&(b_base, a_base)];
+                        a_index[4] = b_index[4]; // we correct this because we want to track the true base
+                        index[4] = CONTEXT_LOOKUP[&(b_base, a_base)];
                         err[0] = b_base as char;
                         err[1] = a_base as char;
                         index
@@ -261,7 +252,7 @@ impl Counts {
                         continue;
                     };
 
-                    let bases = CONTEXT_TO_CONTEXT2[err_index[5]];
+                    let bases = CONTEXT_TO_CONTEXT2[err_index[4]];
                     self.cnts[a_index] += 1;
                     self.cnts[b_index] += 1;
 
