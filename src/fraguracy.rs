@@ -10,6 +10,12 @@ use std::fmt;
 use std::rc::Rc;
 use std::str;
 
+#[derive(Eq, Hash, PartialEq)]
+pub(crate) struct Position {
+    pub tid: i32,
+    pub pos: u32,
+}
+
 pub(crate) struct Counts {
     pub(crate) ibam: IndexedReader,
     //  read, f/r pos, mq, bp, ctx{6} */
@@ -18,6 +24,9 @@ pub(crate) struct Counts {
     pub(crate) cnts: Array5<u64>,
     pub(crate) mismatches: u64,
     pub(crate) matches: u64,
+
+    // position -> error count. nice to find sites that are error-prone.
+    pub(crate) error_positions: HashMap<Position, u32>,
 }
 
 fn argmax<T: Ord>(slice: &[T]) -> Option<usize> {
@@ -56,7 +65,7 @@ impl Stat {
         String::from("read12\tFR\tbq_bin\tread_pos\tcontext\ttotal_count\terror_count")
     }
 
-    pub(crate) fn from_counts(c: Counts, bin_size: usize) -> Vec<Stat> {
+    pub(crate) fn from_counts(c: &Counts, bin_size: usize) -> Vec<Stat> {
         let mut stats = vec![];
         for readi in 0..c.cnts.shape()[0] {
             for fri in 0..c.cnts.shape()[1] {
@@ -106,6 +115,7 @@ impl Counts {
             errs: Array::zeros((2, 2, bins, 5, 6)),
             mismatches: 0,
             matches: 0,
+            error_positions: HashMap::new(),
         }
     }
 
@@ -251,6 +261,13 @@ impl Counts {
                         // can't determine which is error base.
                         continue;
                     };
+
+                    let pos = Position {
+                        tid: a.tid(),
+                        pos: genome_pos,
+                    };
+
+                    *self.error_positions.entry(pos).or_insert(0) += 1;
 
                     let bases = CONTEXT_TO_CONTEXT2[err_index[4]];
                     self.cnts[a_index] += 1;

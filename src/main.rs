@@ -1,7 +1,9 @@
 mod fraguracy;
+mod plot;
 #[macro_use]
 extern crate lazy_static;
 use clap::{Parser, Subcommand};
+use std::io::Write;
 use std::path::PathBuf;
 
 use rust_htslib::bam::{IndexedReader, Read, Reader};
@@ -32,6 +34,14 @@ enum Commands {
         #[arg(
             short,
             long,
+            default_value_t = String::from("fraguracy-"),
+            help = "prefix for output files"
+        )]
+        output_prefix: String,
+
+        #[arg(
+            short,
+            long,
             default_value_t = 150,
             help = "indicate the maximum read length in the alignment file"
         )]
@@ -51,6 +61,10 @@ enum Commands {
         )]
         min_mapping_quality: u8,
     },
+
+    Plot {
+        tsv: PathBuf,
+    },
 }
 
 fn main() {
@@ -64,6 +78,7 @@ fn main() {
         Commands::Extract {
             bam,
             fasta,
+            output_prefix,
             bin_size,
             max_read_length,
             min_mapping_quality,
@@ -71,17 +86,21 @@ fn main() {
             extract_main(
                 bam,
                 fasta,
+                PathBuf::from(output_prefix),
                 bin_size as u32,
                 max_read_length as u32,
                 min_mapping_quality,
             );
         }
+
+        Commands::Plot { tsv } => plot::plot(tsv),
     }
 }
 
 fn extract_main(
     path: PathBuf,
     fasta_path: Option<PathBuf>,
+    output_prefix: PathBuf,
     bin_size: u32,
     max_read_length: u32,
     min_mapping_quality: u8,
@@ -181,8 +200,35 @@ fn extract_main(
         counts.matches,
     );
 
-    let stats = Stat::from_counts(counts, bin_size as usize);
+    let stats = Stat::from_counts(&counts, bin_size as usize);
     let header = Stat::header();
-    println!("{header}");
-    stats.iter().for_each(|s| println!("{s}"));
+
+    let mut fh = std::fs::File::create(
+        output_prefix
+            .to_str()
+            .expect("error getting output prefix")
+            .to_owned()
+            + "counts.txt",
+    )
+    .expect("error opening file!");
+
+    write!(fh, "{header}\n").expect("error writing to file");
+    stats
+        .iter()
+        .for_each(|s| _ = write!(fh, "{s}\n").expect("error writing to file"));
+
+    let mut errfh = std::fs::File::create(
+        output_prefix
+            .to_str()
+            .expect("error getting output prefix")
+            .to_owned()
+            + "errors.txt",
+    )
+    .expect("error opening file!");
+
+    for (pos, cnt) in (&counts.error_positions).iter() {
+        let chrom = &chroms[pos.tid as usize];
+        let position = pos.pos;
+        write!(errfh, "{chrom}\t{position}\t{cnt}\n").expect("error writing to error file");
+    }
 }
