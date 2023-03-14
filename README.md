@@ -9,14 +9,25 @@ beginning of read 1 and the end of read2 (which are known to have increased erro
 `fraguracy` binary available in releases takes a bam file (cram supported soon) and outputs error stats. The plotting is currently done via python.
 
 ```
-fraguracy extract \
+$ fraguracy extract \
     --bin-size 1 \
     --output-prefix fraguracy-$sample-consensus- \
     $sample.bam \
     $reference \
 
-python plot.py fraguracy-$sample-consensus-counts.txt # writes read.html
-head fraguracy-$sample-errors.txt # records base position of every error observed and count of errors at that site.
+$ python plot.py fraguracy-$sample-consensus-counts.txt # writes read.html
+
+$ head fraguracy-$sample-errors.txt # records base position of every error observed and count of errors at that site.
+chrom	pos0	bq_bin	count
+chr1	75822283	05-19	6
+chr1	75822287	20-36	4
+chr1	75822287	37-59	3
+chr1	75822287	60+	2
+chr1	75822341	05-19	2
+chr1	75822352	20-36	2
+chr1	75822360	20-36	2
+chr1	241850751	37-59	2
+chr1	241850752	20-36	2
 ```
 
 ## Bins
