@@ -79,4 +79,22 @@ Read 1 or Read 2
 read position is simply divided by 3. so bins of 3 bases.
 
 
+# vcfanno
+
+To use the errors files with vcfanno:
+
+```
+bgzip fraguracy/fraguracy-19610X19-errors.txt
+tabix -f -0 -b 2 -e 2 -s 1 -S 1 fraguracy/fraguracy-19610X19-errors.txt.gz
+
+echo '
+[[annotation]]
+file="fraguracy/fraguracy-19610X19-errors.txt.gz"
+columns=[3, 4]
+names=["frag_bq_bin", "frag_errors"]
+ops=["first", "first"]
+' > conf.toml
+
+vcfanno conf.toml $vcf > annotated.vcf # annotated.vcf will have entries for `frag_bq_bin` and `frag_errors` where there was an error found that was also a variant in the VCF.
+```
 
