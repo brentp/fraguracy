@@ -186,12 +186,11 @@ fn extract_main(
             }
         });
     log::info!(
-        "[FINAL] map len:{:?} total reads: {:?}, pairs: {}, counts: {:?} \
+        "[FINAL] map len:{:?} total reads: {:?}, pairs: {} \
         \n mismatches: {} matches: {}",
         map.len(),
         n_total,
         n_pairs,
-        counts.cnts,
         counts.mismatches,
         counts.matches,
     );
