@@ -3,6 +3,7 @@ mod fraguracy;
 #[macro_use]
 extern crate lazy_static;
 use clap::{Parser, Subcommand};
+use itertools::Itertools;
 use std::io::Write;
 use std::path::PathBuf;
 
@@ -220,10 +221,14 @@ fn extract_main(
             + "errors.txt",
     )
     .expect("error opening file!");
+    write!(errfh, "chrom\tpos0\tbq_bin\tcount\n").expect("error writing to file");
 
-    for (pos, cnt) in (&counts.error_positions).iter() {
+    for pos in counts.error_positions.keys().sorted() {
+        //for (pos, cnt) in (&counts.error_positions).iter() {
+        let cnt = counts.error_positions[pos];
         let chrom = &chroms[pos.tid as usize];
         let position = pos.pos;
-        write!(errfh, "{chrom}\t{position}\t{cnt}\n").expect("error writing to error file");
+        let bqs = crate::fraguracy::Q_LOOKUP[pos.bq_bin as usize];
+        write!(errfh, "{chrom}\t{position}\t{bqs}\t{cnt}\n").expect("error writing to error file");
     }
 }

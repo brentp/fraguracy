@@ -10,10 +10,11 @@ use std::fmt;
 use std::rc::Rc;
 use std::str;
 
-#[derive(Eq, Hash, PartialEq)]
+#[derive(Eq, Hash, PartialEq, Ord, PartialOrd)]
 pub(crate) struct Position {
     pub tid: i32,
     pub pos: u32,
+    pub bq_bin: u8,
 }
 
 pub(crate) struct Counts {
@@ -265,6 +266,7 @@ impl Counts {
                     let pos = Position {
                         tid: a.tid(),
                         pos: genome_pos,
+                        bq_bin: err_index[3] as u8,
                     };
 
                     *self.error_positions.entry(pos).or_insert(0) += 1;
@@ -368,7 +370,7 @@ lazy_static! {
         ['C', 'G'],
         ['C', 'T']
     ];
-    static ref Q_LOOKUP: [&'static str; 5] = ["0-5", "05-19", "20-36", "37-59", "60+"];
+    pub(crate) static ref Q_LOOKUP: [&'static str; 5] = ["0-5", "05-19", "20-36", "37-59", "60+"];
 }
 
 pub(crate) fn filter_read(r: &Rc<Record>) -> bool {
