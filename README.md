@@ -1,26 +1,31 @@
-# TODO
-
-see locations like: samtools mpileup -r chr4:1801736-1801736 -q 10 -q 10 -d 100000 ./19610X1.mapped.sorted.bam
-often have a lot of bases with 'g' clustered. Just ignore?
-
-how to make pileup faster? do it and end when we have a list of variable sites?
-
-output list of untrustworthy sites where there is an error in > 1 read.
-
-
 # Fraguracy
 
-`fraguracy` calculates error rates using overlapping reads in a fragment. This avoids some bias.
+`fraguracy` calculates error rates using overlapping paired-end reads in a fragment. This avoids some bias.
 It does limit to the (potentially) small percentage of bases that overlap and it will sample less at the
 beginning of read 1 and the end of read2 (which are known to have increased error rates).
 
+# Usage
+
+`fraguracy` binary available in releases takes a bam file (cram supported soon) and outputs error stats. The plotting is currently done via python.
+
+```
+fraguracy extract \
+    --bin-size 1 \
+    --output-prefix fraguracy-$sample-consensus- \
+    $sample.bam \
+    $reference \
+
+python plot.py fraguracy-$sample-consensus-counts.txt # writes read.html
+head fraguracy-$sample-errors.txt # records base position of every error observed and count of errors at that site.
+```
 
 ## Bins
 
 The aim is to create a model of errors. Many factors can be predictive of the likelihood of an error.
 The dimensionality is a consideration because if the data is too sparse, prediction is less reliable.
-Therefore we limit to: **Base-Quality**, **Mapping-Quality**, **Sequence Context**, **Read**, and **Position in Read**
-as described and binned below. With those binnings we have 15,000 possible combinations (5 * 5 * 6 * 2 * 30 )
+Because we determine accuracy by the mapping, it is best to require a high mapping-quality.
+Therefore we limit to: **Base-Quality**, **Sequence Context**, **Read**, and **Position in Read**
+as described and binned below. With those binnings we have 15,000 possible combinations (5 * 6 * 2 * $read_length / $bin-size )
 
 For each combination, while iterating over the bam, we store the number of errors and the number of total bases
 in each bin. These become, respectively, the numerator and denominator for the error-rate for that set of parameters.
@@ -30,10 +35,13 @@ in each bin. These become, respectively, the numerator and denominator for the e
 Base-Qualities and Mapping Qualities will be binned to:
 
 0. 0-5
-1. 6-20
-2. 21 - 40,
-3. 41 - 59,
+1. 6-19
+2. 20 - 36,
+3. 37 - 59,
 4. 60+
+
+This means that the quantized base-qualities from nova-seq (2, 12, 23 and 37) are each in separate bins.
+And other base-quality schemes are also paritioned sanely.
 
 ### Sequence Context (6)
 

@@ -14,18 +14,23 @@ fig = make_subplots(
 
 df = pl.read_csv(sys.argv[1], sep='\t')
 
+qual_bin = "60+"
+qual_bin = "20-39"
+
 r1 = df.filter((pl.col("read12") == "r1") & (pl.col("FR") == "f") & (
-    pl.col('bq_bin') == '60+') & (pl.col('total_count') > 0))
+    pl.col('bq_bin') == qual_bin) & (pl.col('total_count') > 0))
 r2 = df.filter((pl.col("read12") == "r2") & (pl.col("FR") == "r") & (
-    pl.col('bq_bin') == '60+') & (pl.col('total_count') > 0))
+    pl.col('bq_bin') == qual_bin) & (pl.col('total_count') > 0))
+
+print(r1.shape, r2.shape)
 
 contexts = list(sorted(r1['context'].unique(), reverse=False))
 print(contexts)
 
 r1 = r1.with_columns([
-    (((pl.col('error_count') + 1e-10) / (1 + pl.col('total_count')))).alias('rate')])
+    (((pl.col('error_count') + 0) / (1 + pl.col('total_count')))).alias('rate')])
 r2 = r2.with_columns([
-    (((pl.col('error_count') + 1e-10) / (1 + pl.col('total_count')))).alias('rate')])
+    (((pl.col('error_count') + 0) / (1 + pl.col('total_count')))).alias('rate')])
 
 cols = plotly.colors.DEFAULT_PLOTLY_COLORS
 
@@ -33,9 +38,9 @@ for i, ctx in enumerate(contexts):
     sub1 = r1.filter(pl.col('context') == ctx)
     sub2 = r2.filter(pl.col('context') == ctx)
 
-    t1 = go.Scatter(name=ctx, x=np.array(sub1["read_pos"]), y=np.log10(np.array(
+    t1 = go.Scatter(name=ctx, x=np.array(sub1["read_pos"]), y=(1_000_000 * np.array(
         sub1['rate'])), line=dict(color=cols[i]))
-    t2 = go.Scatter(name=ctx, x=np.array(sub2["read_pos"]), y=np.log10(np.array(
+    t2 = go.Scatter(name=ctx, x=np.array(sub2["read_pos"]), y=(1_000_000 * np.array(
         sub2['rate'])), line=dict(color=cols[i]), showlegend=False)
     fig.add_trace(t1, row=1, col=1)
     fig.add_trace(t2, row=2, col=1)
@@ -46,7 +51,7 @@ fig.update_xaxes(title_text="relative read position")
 
 # fig.update_layout(title_text="error-rate along a read")
 
-fig.update_yaxes(title_text="errors per million bases")
+fig.update_yaxes(title_text="errors per million read bases")
 # fig.update_layout(yaxis_tickformat = '%g')
 
 

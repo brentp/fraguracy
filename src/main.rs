@@ -1,5 +1,5 @@
 mod fraguracy;
-mod plot;
+//mod plot;
 #[macro_use]
 extern crate lazy_static;
 use clap::{Parser, Subcommand};
@@ -61,10 +61,7 @@ enum Commands {
         )]
         min_mapping_quality: u8,
     },
-
-    Plot {
-        tsv: PathBuf,
-    },
+    //Plot { tsv: PathBuf, },
 }
 
 fn main() {
@@ -91,9 +88,7 @@ fn main() {
                 max_read_length as u32,
                 min_mapping_quality,
             );
-        }
-
-        Commands::Plot { tsv } => plot::plot(tsv),
+        } //Commands::Plot { tsv } => plot::plot(tsv),
     }
 }
 

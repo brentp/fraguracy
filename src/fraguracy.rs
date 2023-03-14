@@ -124,8 +124,8 @@ impl Counts {
         match q {
             0..=5 => 0,
             6..=19 => 1,
-            20..=39 => 2,
-            40..=59 => 3,
+            20..=36 => 2,
+            37..=59 => 3,
             _ => 4,
         }
     }
@@ -169,9 +169,12 @@ impl Counts {
                 if bq < min_base_qual {
                     continue;
                 }
+                let aqb4 = aq;
+                let bqb4 = bq;
 
                 let aq = Counts::qual_to_bin(aq);
                 let bq = Counts::qual_to_bin(bq);
+                eprintln!("{}->{}, {}->{}", aqb4, aq, bqb4, bq);
 
                 let a_base = unsafe { a_seq.decoded_base_unchecked(ai as usize) };
                 let b_base = unsafe { b_seq.decoded_base_unchecked(bi as usize) };
@@ -368,7 +371,7 @@ lazy_static! {
         ['C', 'G'],
         ['C', 'T']
     ];
-    static ref Q_LOOKUP: [&'static str; 5] = ["0-5", "05-19", "20-39", "40-59", "60+"];
+    static ref Q_LOOKUP: [&'static str; 5] = ["0-5", "05-19", "20-36", "37-59", "60+"];
 }
 
 pub(crate) fn filter_read(r: &Rc<Record>) -> bool {
