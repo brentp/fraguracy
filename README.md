@@ -1,12 +1,12 @@
 # Fraguracy
 
-`fraguracy` calculates error rates using overlapping paired-end reads in a fragment. This avoids some bias.
+`fraguracy` calculates real error rates using overlapping paired-end reads in a fragment. This avoids some bias.
 It does limit to the (potentially) small percentage of bases that overlap and it will sample less at the
 beginning of read 1 and the end of read2 (which are known to have increased error rates).
 
 # Usage
 
-`fraguracy` binary available in releases takes a bam file (cram supported soon) and outputs error stats. The plotting is currently done via python.
+The `fraguracy` binary available in releases takes a bam file (cram supported soon) and outputs error stats. The plotting is currently done via python.
 
 ```
 $ fraguracy extract \
@@ -29,6 +29,8 @@ chr1	75822360	20-36	2
 chr1	241850751	37-59	2
 chr1	241850752	20-36	2
 ```
+
+The errors file is useful to find **positions that are frequent errors** -- having count > 1 or with multiple bq_bins showing the same position.
 
 ## Bins
 
