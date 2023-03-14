@@ -19,9 +19,9 @@ pub(crate) struct Position {
 
 pub(crate) struct Counts {
     pub(crate) ibam: IndexedReader,
-    //  read, f/r pos, mq, bp, ctx{6} */
+    //  read, f/r pos, bq, bp, ctx{6} */
     pub(crate) errs: Array5<u64>,
-    //  read, f/r pos, mq, bp, ctx{2} */
+    //  read, f/r pos, bq, bp, ctx{2} */
     pub(crate) cnts: Array5<u64>,
     pub(crate) mismatches: u64,
     pub(crate) matches: u64,

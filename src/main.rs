@@ -218,17 +218,19 @@ fn extract_main(
             .to_str()
             .expect("error getting output prefix")
             .to_owned()
-            + "errors.txt",
+            + "errors.bed",
     )
     .expect("error opening file!");
-    write!(errfh, "chrom\tpos0\tbq_bin\tcount\n").expect("error writing to file");
+    write!(errfh, "chrom\tstart\tend\tbq_bin\tcount\n").expect("error writing to file");
 
     for pos in counts.error_positions.keys().sorted() {
         //for (pos, cnt) in (&counts.error_positions).iter() {
         let cnt = counts.error_positions[pos];
         let chrom = &chroms[pos.tid as usize];
         let position = pos.pos;
+        let end = position + 1;
         let bqs = crate::fraguracy::Q_LOOKUP[pos.bq_bin as usize];
-        write!(errfh, "{chrom}\t{position}\t{bqs}\t{cnt}\n").expect("error writing to error file");
+        write!(errfh, "{chrom}\t{position}\t{end}\t{bqs}\t{cnt}\n")
+            .expect("error writing to error file");
     }
 }

@@ -17,17 +17,17 @@ $ fraguracy extract \
 
 $ python plot.py fraguracy-$sample-consensus-counts.txt # writes read.html
 
-$ head fraguracy-$sample-errors.txt # records base position of every error observed and count of errors at that site.
-chrom	pos0	bq_bin	count
-chr1	75822283	05-19	6
-chr1	75822287	20-36	4
-chr1	75822287	37-59	3
-chr1	75822287	60+	2
-chr1	75822341	05-19	2
-chr1	75822352	20-36	2
-chr1	75822360	20-36	2
-chr1	241850751	37-59	2
-chr1	241850752	20-36	2
+$ head fraguracy-$sample-errors.bed # records base position of every error observed and count of errors at that site.
+chrom	start	stop	bq_bin	count
+chr1	75822283	75822284	05-19	6	
+chr1	75822287	75822288	20-36	4	
+chr1	75822287	75822288	37-59	3	
+chr1	75822287	75822288	60+	2	
+chr1	75822341	75822342	05-19	2	
+chr1	75822352	75822353	20-36	2	
+chr1	75822360	75822361	20-36	2	
+chr1	241850751	241850752	37-59	2	
+chr1	241850752	241850753	20-36	2	
 ```
 
 The errors file is useful to find **positions that are frequent errors** -- having count > 1 or with multiple bq_bins showing the same position.
@@ -84,12 +84,12 @@ read position is simply divided by 3. so bins of 3 bases.
 To use the errors files with vcfanno:
 
 ```
-bgzip fraguracy/fraguracy-19610X19-errors.txt
-tabix -f -0 -b 2 -e 2 -s 1 -S 1 fraguracy/fraguracy-19610X19-errors.txt.gz
+bgzip fraguracy/fraguracy-19610X19-errors.bed
+tabix fraguracy/fraguracy-19610X19-errors.bed.gz
 
 echo '
 [[annotation]]
-file="fraguracy/fraguracy-19610X19-errors.txt.gz"
+file="fraguracy/fraguracy-19610X19-errors.bed.gz"
 columns=[3, 4]
 names=["frag_bq_bin", "frag_errors"]
 ops=["first", "first"]
