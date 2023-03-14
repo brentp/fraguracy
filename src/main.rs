@@ -220,7 +220,7 @@ fn extract_main(
             + "errors.bed",
     )
     .expect("error opening file!");
-    write!(errfh, "chrom\tstart\tend\tbq_bin\tcount\n").expect("error writing to file");
+    write!(errfh, "#chrom\tstart\tend\tbq_bin\tcount\n").expect("error writing to file");
 
     for pos in counts.error_positions.keys().sorted() {
         //for (pos, cnt) in (&counts.error_positions).iter() {

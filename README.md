@@ -90,7 +90,7 @@ tabix fraguracy/fraguracy-19610X19-errors.bed.gz
 echo '
 [[annotation]]
 file="fraguracy/fraguracy-19610X19-errors.bed.gz"
-columns=[3, 4]
+columns=[4, 5]
 names=["frag_bq_bin", "frag_errors"]
 ops=["first", "first"]
 ' > conf.toml
