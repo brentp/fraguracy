@@ -32,6 +32,11 @@ chr1	241850752	20-36	2
 
 The errors file is useful to find **positions that are frequent errors** -- having count > 1 or with multiple bq_bins showing the same position.
 
+The plot.py will create an interactive plot that looks like this:
+
+![frag-plot](https://user-images.githubusercontent.com/1739/225074861-7b5098d1-b5e9-4bab-8971-0a278f182aaa.png)
+
+
 ## Bins
 
 The aim is to create a model of errors. Many factors can be predictive of the likelihood of an error.
