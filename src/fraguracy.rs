@@ -169,12 +169,9 @@ impl Counts {
                 if bq < min_base_qual {
                     continue;
                 }
-                let aqb4 = aq;
-                let bqb4 = bq;
 
                 let aq = Counts::qual_to_bin(aq);
                 let bq = Counts::qual_to_bin(bq);
-                eprintln!("{}->{}, {}->{}", aqb4, aq, bqb4, bq);
 
                 let a_base = unsafe { a_seq.decoded_base_unchecked(ai as usize) };
                 let b_base = unsafe { b_seq.decoded_base_unchecked(bi as usize) };
