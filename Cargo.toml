@@ -15,6 +15,8 @@ ndarray = "0.15.6"
 env_logger = "0.10.0"
 log = "0.4.17"
 itertools = "0.10.5"
+rayon = "1.7.0"
+linear-map = "1.2.0"
 #plotly = "0.8.3"
 #polars = { version = "0.27.2", features = ["lazy", "strings"] }
 

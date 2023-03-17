@@ -1,15 +1,20 @@
+mod files;
 mod fraguracy;
 //mod plot;
 #[macro_use]
 extern crate lazy_static;
 use clap::{Parser, Subcommand};
-use itertools::Itertools;
-use std::io::Write;
+use linear_map::LinearMap;
+
+use std::collections::HashMap;
 use std::path::PathBuf;
 
+use rust_htslib::bam;
 use rust_htslib::bam::{IndexedReader, Read, Reader};
 use rust_htslib::faidx;
 use rustc_hash::FxHashMap;
+
+use rayon::prelude::*;
 
 use crate::fraguracy::Stat;
 
@@ -30,8 +35,13 @@ struct Cli {
 enum Commands {
     #[command(arg_required_else_help = true)]
     Extract {
-        bam: PathBuf,
+        #[arg(
+            short,
+            long,
+            help = "fasta for use with crams and/or to use as 'truth'"
+        )]
         fasta: Option<PathBuf>,
+        bams: Vec<PathBuf>,
         #[arg(
             short,
             long,
@@ -65,6 +75,19 @@ enum Commands {
     //Plot { tsv: PathBuf, },
 }
 
+fn get_sample_name(hmap: HashMap<String, Vec<LinearMap<String, String>>>) -> String {
+    if let Some(lm) = hmap.get("RG") {
+        let sm = String::from("SM");
+        if let Some(v) = lm[0].get(&sm) {
+            return (*v).clone();
+        } else {
+            return String::from("");
+        }
+    } else {
+        return String::from("");
+    }
+}
+
 fn main() {
     let args = Cli::parse();
     if env::var("RUST_LOG").is_err() {
@@ -74,7 +97,7 @@ fn main() {
 
     match args.command {
         Commands::Extract {
-            bam,
+            bams,
             fasta,
             output_prefix,
             bin_size,
@@ -82,7 +105,7 @@ fn main() {
             min_mapping_quality,
         } => {
             extract_main(
-                bam,
+                bams,
                 fasta,
                 PathBuf::from(output_prefix),
                 bin_size as u32,
@@ -93,27 +116,25 @@ fn main() {
     }
 }
 
-fn extract_main(
+fn process_bam(
     path: PathBuf,
     fasta_path: Option<PathBuf>,
     output_prefix: PathBuf,
     bin_size: u32,
     max_read_length: u32,
     min_mapping_quality: u8,
+    min_base_qual: u8,
 ) {
-    //let args: Vec<String> = env::args().collect();
-    let mut map = FxHashMap::default();
-    let min_base_qual = 10u8;
-
     let mut bam = Reader::from_path(&path).expect("error reading bam file {path}");
     bam.set_threads(3).expect("error setting threads");
+    let mut map = FxHashMap::default();
 
     let mut ibam =
         IndexedReader::from_path(&path).expect("bam file (path) must be sorted and indexed");
     ibam.set_threads(3)
         .expect("error setting threads on indexed reader");
 
-    let fasta: Option<faidx::Reader> = if let Some(fa_path) = fasta_path {
+    let fasta: Option<faidx::Reader> = if let Some(fa_path) = fasta_path.clone() {
         bam.set_reference(&fa_path)
             .expect("Error setting reference for file");
         ibam.set_reference(&fa_path)
@@ -136,6 +157,12 @@ fn extract_main(
         .iter()
         .map(|n| unsafe { str::from_utf8_unchecked(n) }.to_string())
         .collect();
+
+    let hmap = bam::Header::from_template(bam.header()).to_hashmap();
+    let sample_name = get_sample_name(hmap);
+    log::info!("found sample {sample_name}");
+    let output_prefix: PathBuf =
+        (output_prefix.to_string_lossy().to_string() + &sample_name).into();
 
     let mut last_tid: i32 = 0;
     bam.rc_records()
@@ -196,40 +223,30 @@ fn extract_main(
     );
 
     let stats = Stat::from_counts(&counts, bin_size as usize);
-    let header = Stat::header();
+    files::write_stats(stats, output_prefix.clone());
+    files::write_errors(&counts, output_prefix, chroms);
+}
 
-    let mut fh = std::fs::File::create(
-        output_prefix
-            .to_str()
-            .expect("error getting output prefix")
-            .to_owned()
-            + "counts.txt",
-    )
-    .expect("error opening file!");
+fn extract_main(
+    paths: Vec<PathBuf>,
+    fasta_path: Option<PathBuf>,
+    output_prefix: PathBuf,
+    bin_size: u32,
+    max_read_length: u32,
+    min_mapping_quality: u8,
+) {
+    //let args: Vec<String> = env::args().collect();
+    let min_base_qual = 10u8;
 
-    write!(fh, "{header}\n").expect("error writing to file");
-    stats
-        .iter()
-        .for_each(|s| _ = write!(fh, "{s}\n").expect("error writing to file"));
-
-    let mut errfh = std::fs::File::create(
-        output_prefix
-            .to_str()
-            .expect("error getting output prefix")
-            .to_owned()
-            + "errors.bed",
-    )
-    .expect("error opening file!");
-    write!(errfh, "#chrom\tstart\tend\tbq_bin\tcount\n").expect("error writing to file");
-
-    for pos in counts.error_positions.keys().sorted() {
-        //for (pos, cnt) in (&counts.error_positions).iter() {
-        let cnt = counts.error_positions[pos];
-        let chrom = &chroms[pos.tid as usize];
-        let position = pos.pos;
-        let end = position + 1;
-        let bqs = crate::fraguracy::Q_LOOKUP[pos.bq_bin as usize];
-        write!(errfh, "{chrom}\t{position}\t{end}\t{bqs}\t{cnt}\n")
-            .expect("error writing to error file");
-    }
+    paths.par_iter().for_each(|path| {
+        process_bam(
+            path.clone(),
+            fasta_path.clone(),
+            output_prefix.clone(),
+            bin_size,
+            max_read_length,
+            min_mapping_quality,
+            min_base_qual,
+        )
+    })
 }
