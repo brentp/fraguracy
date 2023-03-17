@@ -12,8 +12,8 @@ The `fraguracy` binary available in releases takes a bam file (cram supported so
 $ fraguracy extract \
     --bin-size 1 \
     --output-prefix fraguracy-$sample-consensus- \
-    $sample.bam \
-    $reference \
+    --fasta $reference \
+    $sample.bam [.. *.bam] \
 
 $ python plot.py fraguracy-$sample-consensus-counts.txt # writes read.html
 
@@ -31,6 +31,9 @@ chr1	241850752	241850753	20-36	2
 ```
 
 The errors file is useful to find **positions that are frequent errors** -- having count > 1 or with multiple bq_bins showing the same position.
+
+If multiple samples are given (multiple bam files) then each sample is processed in parallel and $prefix-total-counts.txt and $prefix-total-errors.bed will
+be created which sum all values for all samples.
 
 The plot.py will create an interactive plot that looks like this:
 
