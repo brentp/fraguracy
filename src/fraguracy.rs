@@ -18,8 +18,12 @@ pub(crate) struct Position {
 }
 
 pub(crate) struct Counts {
-    pub(crate) ibam: IndexedReader,
+    pub(crate) ibam: Option<IndexedReader>,
     //  read, f/r pos, bq, bp, ctx{6} */
+    pub(crate) counts: InnerCounts,
+}
+
+pub(crate) struct InnerCounts {
     pub(crate) errs: Array5<u64>,
     //  read, f/r pos, bq, bp, ctx{2} */
     pub(crate) cnts: Array5<u64>,
@@ -34,6 +38,19 @@ fn argmax<T: Ord>(slice: &[T]) -> Option<usize> {
     (0..slice.len()).max_by_key(|i| &slice[*i])
 }
 
+impl std::ops::AddAssign<InnerCounts> for InnerCounts {
+    fn add_assign(&mut self, o: InnerCounts) {
+        self.errs.add_assign(&o.errs);
+        self.cnts.add_assign(&o.cnts);
+        self.mismatches += o.mismatches;
+        self.matches += o.matches;
+
+        for (pos, cnt) in o.error_positions.into_iter() {
+            *self.error_positions.entry(pos).or_insert(0) += cnt;
+        }
+    }
+}
+
 pub(crate) struct Stat {
     read12: u8,
     fr: u8,
@@ -43,6 +60,8 @@ pub(crate) struct Stat {
     total_count: u64,
     error_count: u64,
 }
+
+unsafe impl std::marker::Sync for Counts {}
 
 impl fmt::Display for Stat {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -66,7 +85,7 @@ impl Stat {
         String::from("read12\tFR\tbq_bin\tread_pos\tcontext\ttotal_count\terror_count")
     }
 
-    pub(crate) fn from_counts(c: &Counts, bin_size: usize) -> Vec<Stat> {
+    pub(crate) fn from_counts(c: &InnerCounts, bin_size: usize) -> Vec<Stat> {
         let mut stats = vec![];
         for readi in 0..c.cnts.shape()[0] {
             for fri in 0..c.cnts.shape()[1] {
@@ -107,16 +126,24 @@ impl Stat {
     }
 }
 
-impl Counts {
-    pub(crate) fn new(ir: IndexedReader, bins: usize) -> Self {
-        Counts {
-            /*                         read1/2, F/R, pos, bq, ctx */
-            ibam: ir,
+impl InnerCounts {
+    pub(crate) fn new(bins: usize) -> Self {
+        InnerCounts {
             cnts: Array::zeros((2, 2, bins, 5, 2)),
             errs: Array::zeros((2, 2, bins, 5, 6)),
             mismatches: 0,
             matches: 0,
             error_positions: HashMap::new(),
+        }
+    }
+}
+
+impl Counts {
+    pub(crate) fn new(ir: Option<IndexedReader>, bins: usize) -> Self {
+        Counts {
+            /*                         read1/2, F/R, pos, bq, ctx */
+            ibam: ir,
+            counts: InnerCounts::new(bins),
         }
     }
 
@@ -202,20 +229,20 @@ impl Counts {
                 if a_base == b_base {
                     // fast path to increment separately here because we must do some extra stuff to error base before incrementing count
                     // if there is an error.
-                    self.cnts[a_index] += 1;
-                    self.cnts[b_index] += 1;
-                    self.matches += 1;
+                    self.counts.cnts[a_index] += 1;
+                    self.counts.cnts[b_index] += 1;
+                    self.counts.matches += 1;
                     continue;
                 }
 
                 if a_base != b_base {
                     let genome_pos = g_chunk.start + (ai - a_chunk.start);
-                    self.mismatches += 1;
+                    self.counts.mismatches += 1;
                     let mut err = ['X', 'X'];
 
-                    let real_base = if fasta.is_none() {
+                    let real_base = if self.ibam.is_some() {
                         let mut base_counts = pile(
-                            &mut self.ibam,
+                            &mut (self.ibam.as_mut().unwrap()),
                             a.tid(),
                             genome_pos,
                             min_map_qual,
@@ -269,19 +296,19 @@ impl Counts {
                         bq_bin: err_index[3] as u8,
                     };
 
-                    *self.error_positions.entry(pos).or_insert(0) += 1;
+                    *self.counts.error_positions.entry(pos).or_insert(0) += 1;
 
                     let bases = CONTEXT_TO_CONTEXT2[err_index[4]];
-                    self.cnts[a_index] += 1;
-                    self.cnts[b_index] += 1;
+                    self.counts.cnts[a_index] += 1;
+                    self.counts.cnts[b_index] += 1;
 
-                    self.errs[err_index] += 1;
+                    self.counts.errs[err_index] += 1;
                     // TODO: brent check these make sense, run in debug mode
 
                     log::debug!(
                         "gpos: {}, mm: {}, err:{}->{}, err-index:{:?}, ai: {}, bi: {}, {:?} (check) round-trip-base: {} (was {},{}) {:?}",
                         genome_pos,
-                        self.mismatches,
+                        self.counts.mismatches,
                         /* base_counts, */
                         err[0],
                         err[1],

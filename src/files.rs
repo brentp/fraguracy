@@ -1,4 +1,4 @@
-use crate::fraguracy::{Counts, Stat};
+use crate::fraguracy::{InnerCounts, Stat};
 use std::string::String;
 
 use itertools::Itertools;
@@ -24,7 +24,7 @@ pub(crate) fn write_stats(stats: Vec<Stat>, output_prefix: PathBuf) {
         .for_each(|s| _ = write!(fh, "{s}\n").expect("error writing to file"));
 }
 
-pub(crate) fn write_errors(counts: &Counts, output_prefix: PathBuf, chroms: Vec<String>) {
+pub(crate) fn write_errors(counts: &InnerCounts, output_prefix: PathBuf, chroms: Vec<String>) {
     let mut errfh = std::fs::File::create(
         output_prefix
             .to_str()

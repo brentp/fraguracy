@@ -124,7 +124,7 @@ fn process_bam(
     max_read_length: u32,
     min_mapping_quality: u8,
     min_base_qual: u8,
-) {
+) -> fraguracy::InnerCounts {
     let mut bam = Reader::from_path(&path).expect("error reading bam file {path}");
     bam.set_threads(3).expect("error setting threads");
     let mut map = FxHashMap::default();
@@ -147,7 +147,7 @@ fn process_bam(
     };
 
     let bins = max_read_length / bin_size;
-    let mut counts = fraguracy::Counts::new(ibam, bins as usize);
+    let mut counts = fraguracy::Counts::new(Some(ibam), bins as usize);
 
     let mut n_total = 0;
     let mut n_pairs = 0;
@@ -162,7 +162,7 @@ fn process_bam(
     let sample_name = get_sample_name(hmap);
     log::info!("found sample {sample_name}");
     let output_prefix: PathBuf =
-        (output_prefix.to_string_lossy().to_string() + &sample_name).into();
+        (output_prefix.to_string_lossy().to_string() + &sample_name + "-").into();
 
     let mut last_tid: i32 = 0;
     bam.rc_records()
@@ -218,13 +218,15 @@ fn process_bam(
         map.len(),
         n_total,
         n_pairs,
-        counts.mismatches,
-        counts.matches,
+        counts.counts.mismatches,
+        counts.counts.matches,
     );
 
-    let stats = Stat::from_counts(&counts, bin_size as usize);
+    let stats = Stat::from_counts(&counts.counts, bin_size as usize);
     files::write_stats(stats, output_prefix.clone());
-    files::write_errors(&counts, output_prefix, chroms);
+    files::write_errors(&counts.counts, output_prefix, chroms);
+
+    return counts.counts;
 }
 
 fn extract_main(
@@ -238,15 +240,38 @@ fn extract_main(
     //let args: Vec<String> = env::args().collect();
     let min_base_qual = 10u8;
 
-    paths.par_iter().for_each(|path| {
-        process_bam(
-            path.clone(),
-            fasta_path.clone(),
-            output_prefix.clone(),
-            bin_size,
-            max_read_length,
-            min_mapping_quality,
-            min_base_qual,
-        )
-    })
+    let total_counts = paths
+        .par_iter()
+        .map(|path| {
+            process_bam(
+                path.clone(),
+                fasta_path.clone(),
+                output_prefix.clone(),
+                bin_size,
+                max_read_length,
+                min_mapping_quality,
+                min_base_qual,
+            )
+        })
+        .reduce_with(|mut a, b| {
+            a += b;
+            a
+        });
+
+    let total_counts = total_counts.expect("error accumulating total counts");
+    if paths.len() > 1 {
+        let bam = Reader::from_path(&paths[0]).expect("error reading bam file {path}");
+        let chroms: Vec<String> = bam
+            .header()
+            .target_names()
+            .iter()
+            .map(|n| unsafe { str::from_utf8_unchecked(n) }.to_string())
+            .collect();
+        let output_prefix: PathBuf =
+            (output_prefix.to_string_lossy().to_string() + "total-").into();
+
+        let stats = Stat::from_counts(&total_counts, bin_size as usize);
+        files::write_stats(stats, output_prefix.clone());
+        files::write_errors(&total_counts, output_prefix, chroms);
+    }
 }
