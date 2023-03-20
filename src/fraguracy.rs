@@ -270,6 +270,13 @@ impl Counts {
                     };
                     if real_base == 'N' {
                         log::warn!("got 'N' for {chrom:?}:{genome_pos} base skipping");
+                        let pos = Position {
+                            tid: a.tid(),
+                            pos: genome_pos,
+                            // we don't know the bq, but assume it's the min. this very rarely happens so doesn't affect results.
+                            bq_bin: aq.min(bq),
+                        };
+                        *self.counts.error_positions.entry(pos).or_insert(0) += 1;
                         continue;
                     }
 
@@ -291,6 +298,13 @@ impl Counts {
                         index
                     } else {
                         // can't determine which is error base.
+                        let pos = Position {
+                            tid: a.tid(),
+                            pos: genome_pos,
+                            // we don't know the bq, but assume it's the min. this very rarely happens so doesn't affect results.
+                            bq_bin: aq.min(bq),
+                        };
+                        *self.counts.error_positions.entry(pos).or_insert(0) += 1;
                         continue;
                     };
 
