@@ -6,6 +6,14 @@ extern crate lazy_static;
 use clap::{Parser, Subcommand};
 use linear_map::LinearMap;
 
+use rust_lapper::{Interval, Lapper};
+
+use flate2::read::GzDecoder;
+use std::fs::File;
+use std::io::{BufRead, BufReader, Read as IORead};
+
+type Iv = Interval<u32, u32>;
+
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -49,6 +57,13 @@ enum Commands {
             help = "prefix for output files"
         )]
         output_prefix: String,
+
+        #[arg(
+            short,
+            long,
+            help = "restrict analysis to the regions given in this BED file"
+        )]
+        regions: Option<PathBuf>,
 
         #[arg(
             short,
@@ -100,6 +115,7 @@ fn main() {
             bams,
             fasta,
             output_prefix,
+            regions,
             bin_size,
             max_read_length,
             min_mapping_quality,
@@ -108,6 +124,7 @@ fn main() {
                 bams,
                 fasta,
                 PathBuf::from(output_prefix),
+                regions,
                 bin_size as u32,
                 max_read_length as u32,
                 min_mapping_quality,
@@ -116,10 +133,78 @@ fn main() {
     }
 }
 
+fn read_bed(path: Option<PathBuf>) -> Option<HashMap<String, Lapper<u32, u32>>> {
+    if path.is_none() {
+        return None;
+    }
+
+    let file = File::open(path.unwrap());
+    if !file.is_ok() {
+        return None;
+    }
+    let file = file.unwrap();
+    let mut buf = [0u8, 0u8];
+    let reader: Box<dyn BufRead> = if file.metadata().expect("eror getting metadata").len() > 2
+        && file
+            .try_clone()
+            .expect("erorr cloning file")
+            .read_exact(&mut buf)
+            .is_ok()
+        && &buf == b"\x1f\x8b"
+    {
+        Box::new(BufReader::new(GzDecoder::new(file)))
+    } else {
+        Box::new(BufReader::new(file))
+    };
+
+    let mut bed = HashMap::new();
+
+    reader.lines().for_each(|l| {
+        let line = l.expect("error reading line");
+        let fields: Vec<_> = line.split('\t').collect();
+        if let (Ok(start), Ok(stop)) = (fields[1].parse::<u32>(), fields[2].parse::<u32>()) {
+            let iv = Iv {
+                start,
+                stop,
+                val: 0,
+            };
+            let chrom = String::from(fields[0]);
+            bed.entry(chrom).or_insert(Vec::new()).push(iv);
+        }
+    });
+
+    let mut tree: HashMap<String, Lapper<u32, u32>> = HashMap::new();
+
+    for (chrom, ivs) in bed.iter() {
+        let ivs = ivs.clone();
+        let chrom = (*chrom).clone();
+        tree.insert(chrom, Lapper::new(ivs));
+    }
+    Some(tree)
+}
+
+fn get_tree<'a>(
+    regions: &'a Option<HashMap<String, Lapper<u32, u32>>>,
+    chrom: &String,
+) -> Option<&'a Lapper<u32, u32>> {
+    let tree: Option<&Lapper<u32, u32>> = if let Some(r) = regions {
+        let l = r.get(chrom);
+        if l.is_none() {
+            None
+        } else {
+            Some(l.unwrap())
+        }
+    } else {
+        None
+    };
+    tree
+}
+
 fn process_bam(
     path: PathBuf,
     fasta_path: Option<PathBuf>,
     output_prefix: PathBuf,
+    regions: Option<PathBuf>,
     bin_size: u32,
     max_read_length: u32,
     min_mapping_quality: u8,
@@ -128,6 +213,8 @@ fn process_bam(
     let mut bam = Reader::from_path(&path).expect("error reading bam file {path}");
     bam.set_threads(3).expect("error setting threads");
     let mut map = FxHashMap::default();
+
+    let regions = read_bed(regions);
 
     let mut ibam =
         IndexedReader::from_path(&path).expect("bam file (path) must be sorted and indexed");
@@ -158,6 +245,8 @@ fn process_bam(
         .map(|n| unsafe { str::from_utf8_unchecked(n) }.to_string())
         .collect();
 
+    let mut tree: Option<&Lapper<u32, u32>> = get_tree(&regions, &chroms[0]);
+
     let hmap = bam::Header::from_template(bam.header()).to_hashmap();
     let sample_name = get_sample_name(hmap);
     log::info!("found sample {sample_name}");
@@ -179,6 +268,10 @@ fn process_bam(
             if b.tid() != last_tid {
                 log::info!("processed chromosome: {}", chroms[last_tid as usize]);
                 last_tid = b.tid();
+
+                if regions.is_some() {
+                    tree = get_tree(&regions, &chroms[last_tid as usize]);
+                }
             }
 
             // by not checking the order here, we allow bams sorted by read name (with position flipped)
@@ -207,6 +300,7 @@ fn process_bam(
                     bin_size,
                     &fasta,
                     &chroms[tid],
+                    &tree,
                 );
             } else {
                 log::warn!("not found: {:?}{:?}", name, b.pos());
@@ -233,6 +327,7 @@ fn extract_main(
     paths: Vec<PathBuf>,
     fasta_path: Option<PathBuf>,
     output_prefix: PathBuf,
+    regions: Option<PathBuf>,
     bin_size: u32,
     max_read_length: u32,
     min_mapping_quality: u8,
@@ -247,6 +342,7 @@ fn extract_main(
                 path.clone(),
                 fasta_path.clone(),
                 output_prefix.clone(),
+                regions.clone(),
                 bin_size,
                 max_read_length,
                 min_mapping_quality,

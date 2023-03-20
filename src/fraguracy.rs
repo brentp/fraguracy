@@ -5,6 +5,7 @@ use rust_htslib::bam::{
     IndexedReader, Read, Record,
 };
 use rust_htslib::faidx;
+use rust_lapper::Lapper;
 use std::collections::HashMap;
 use std::fmt;
 use std::rc::Rc;
@@ -176,6 +177,7 @@ impl Counts {
         bin_size: u32,
         fasta: &Option<faidx::Reader>,
         chrom: N,
+        tree: &Option<&Lapper<u32, u32>>,
     ) {
         let pieces = overlap_pieces(a.cigar(), b.cigar(), false);
         if pieces.len() == 0 {
@@ -196,6 +198,13 @@ impl Counts {
                 let bq = b_qual[bi as usize];
                 if bq < min_base_qual {
                     continue;
+                }
+                let genome_pos = g_chunk.start + (ai - a_chunk.start);
+
+                if let Some(t) = tree {
+                    if t.count(genome_pos, genome_pos + 1) == 0 {
+                        continue;
+                    }
                 }
 
                 let aq = Counts::qual_to_bin(aq);
@@ -236,7 +245,6 @@ impl Counts {
                 }
 
                 if a_base != b_base {
-                    let genome_pos = g_chunk.start + (ai - a_chunk.start);
                     self.counts.mismatches += 1;
                     let mut err = ['X', 'X'];
 
