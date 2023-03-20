@@ -167,7 +167,7 @@ impl Counts {
         }
     }
 
-    pub(crate) fn increment<N: AsRef<str>>(
+    pub(crate) fn increment<N: AsRef<str> + std::fmt::Debug>(
         &mut self,
         a: Rc<Record>,
         b: Rc<Record>,
@@ -260,7 +260,7 @@ impl Counts {
                             );
                             continue;
                         }
-                        ['A', 'C', 'G', 'T'][am]
+                        ['A', 'C', 'G', 'T', 'N'][am]
                     } else {
                         fasta
                             .as_ref()
@@ -268,6 +268,10 @@ impl Counts {
                             .fetch_seq(&chrom, genome_pos as usize, genome_pos as usize)
                             .expect("error extracting base")[0] as char
                     };
+                    if real_base == 'N' {
+                        log::warn!("got 'N' for {chrom:?}:{genome_pos} base skipping");
+                        continue;
+                    }
 
                     let err_index = if a_base == real_base as u8 {
                         // b is the error
