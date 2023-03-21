@@ -1,3 +1,4 @@
+use bpci::*;
 use ndarray::prelude::Array;
 use ndarray::Array5;
 use rust_htslib::bam::{
@@ -53,6 +54,7 @@ impl std::ops::AddAssign<InnerCounts> for InnerCounts {
 }
 
 pub(crate) struct Stat {
+    pub ci: ConfidenceInterval,
     read12: u8,
     fr: u8,
     bq_bin: u8,
@@ -66,9 +68,10 @@ unsafe impl std::marker::Sync for Counts {}
 
 impl fmt::Display for Stat {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let (lo, hi) = self.confidence_interval(&self.ci);
         write!(
             f,
-            "{}\t{}\t{}\t{}\t{}{}\t{}\t{}",
+            "{}\t{}\t{}\t{}\t{}{}\t{}\t{}\t{:.8}\t{:.8}",
             ["r1", "r2"][self.read12 as usize],
             ["f", "r"][self.fr as usize],
             Q_LOOKUP[self.bq_bin as usize],
@@ -76,17 +79,56 @@ impl fmt::Display for Stat {
             self.context[0],
             self.context[1],
             self.total_count,
-            self.error_count
+            self.error_count,
+            lo,
+            hi,
         )
+    }
+}
+
+#[derive(Debug, Clone, clap::ValueEnum)]
+pub enum ConfidenceInterval {
+    AgrestiCoull,
+    Wald,
+    Wilson,
+    //WilsonWithCC,
+}
+
+impl Default for ConfidenceInterval {
+    fn default() -> Self {
+        ConfidenceInterval::AgrestiCoull
+    }
+}
+
+impl fmt::Display for ConfidenceInterval {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?}", self)
     }
 }
 
 impl Stat {
     pub(crate) fn header() -> String {
-        String::from("read12\tFR\tbq_bin\tread_pos\tcontext\ttotal_count\terror_count")
+        String::from("read12\tFR\tbq_bin\tread_pos\tcontext\ttotal_count\terror_count\terr_rate_lo\terr_rate_hi")
     }
 
-    pub(crate) fn from_counts(c: &InnerCounts, bin_size: usize) -> Vec<Stat> {
+    pub(crate) fn confidence_interval(&self, ci: &ConfidenceInterval) -> (f64, f64) {
+        let sample = bpci::NSuccessesSample::new(self.total_count as f64, self.error_count as f64)
+            .expect("error with proportion");
+
+        let f = match ci {
+            ConfidenceInterval::AgrestiCoull => sample.agresti_coull(1.960),
+            ConfidenceInterval::Wald => sample.wald(1.960),
+            ConfidenceInterval::Wilson => sample.wilson_score(1.960),
+        };
+
+        return (f.lower(), f.upper());
+    }
+
+    pub(crate) fn from_counts(
+        c: &InnerCounts,
+        bin_size: usize,
+        ci: ConfidenceInterval,
+    ) -> Vec<Stat> {
         let mut stats = vec![];
         for readi in 0..c.cnts.shape()[0] {
             for fri in 0..c.cnts.shape()[1] {
@@ -110,6 +152,7 @@ impl Stat {
                             }
 
                             stats.push(Stat {
+                                ci: ci.clone(),
                                 read12: readi as u8,
                                 fr: fri as u8,
                                 bq_bin: bqi as u8,

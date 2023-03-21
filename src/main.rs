@@ -4,6 +4,7 @@ mod fraguracy;
 #[macro_use]
 extern crate lazy_static;
 use clap::{Parser, Subcommand};
+use fraguracy::ConfidenceInterval;
 use linear_map::LinearMap;
 
 use rust_lapper::{Interval, Lapper};
@@ -86,6 +87,14 @@ enum Commands {
             help = "only consider pairs where both reads have this mapping-quality or higher (good to leave this high)"
         )]
         min_mapping_quality: u8,
+
+        #[arg(
+            short,
+            long = "ci",
+            help = "method for confidence interval calculation (see rust bpci crate)",
+            default_value = "agresti-coull"
+        )]
+        ci: ConfidenceInterval,
     },
     //Plot { tsv: PathBuf, },
 }
@@ -119,6 +128,7 @@ fn main() {
             bin_size,
             max_read_length,
             min_mapping_quality,
+            ci,
         } => {
             extract_main(
                 bams,
@@ -128,6 +138,7 @@ fn main() {
                 bin_size as u32,
                 max_read_length as u32,
                 min_mapping_quality,
+                ci,
             );
         } //Commands::Plot { tsv } => plot::plot(tsv),
     }
@@ -203,13 +214,12 @@ fn get_tree<'a>(
 fn process_bam(
     path: PathBuf,
     fasta_path: Option<PathBuf>,
-    output_prefix: PathBuf,
     regions: Option<PathBuf>,
     bin_size: u32,
     max_read_length: u32,
     min_mapping_quality: u8,
     min_base_qual: u8,
-) -> fraguracy::InnerCounts {
+) -> (fraguracy::InnerCounts, Vec<String>, String) {
     let mut bam = Reader::from_path(&path).expect("error reading bam file {path}");
     bam.set_threads(3).expect("error setting threads");
     let mut map = FxHashMap::default();
@@ -250,8 +260,6 @@ fn process_bam(
     let hmap = bam::Header::from_template(bam.header()).to_hashmap();
     let sample_name = get_sample_name(hmap);
     log::info!("found sample {sample_name}");
-    let output_prefix: PathBuf =
-        (output_prefix.to_string_lossy().to_string() + &sample_name + "-").into();
 
     let mut last_tid: i32 = 0;
     bam.rc_records()
@@ -316,11 +324,7 @@ fn process_bam(
         counts.counts.matches,
     );
 
-    let stats = Stat::from_counts(&counts.counts, bin_size as usize);
-    files::write_stats(stats, output_prefix.clone());
-    files::write_errors(&counts.counts, output_prefix, chroms);
-
-    return counts.counts;
+    return (counts.counts, chroms, sample_name);
 }
 
 fn extract_main(
@@ -331,6 +335,7 @@ fn extract_main(
     bin_size: u32,
     max_read_length: u32,
     min_mapping_quality: u8,
+    ci: ConfidenceInterval,
 ) {
     //let args: Vec<String> = env::args().collect();
     let min_base_qual = 10u8;
@@ -338,16 +343,23 @@ fn extract_main(
     let total_counts = paths
         .par_iter()
         .map(|path| {
-            process_bam(
+            let (c, chroms, sample_name) = process_bam(
                 path.clone(),
                 fasta_path.clone(),
-                output_prefix.clone(),
                 regions.clone(),
                 bin_size,
                 max_read_length,
                 min_mapping_quality,
                 min_base_qual,
-            )
+            );
+            let output_prefix: PathBuf =
+                (output_prefix.to_string_lossy().to_string() + &sample_name + "-").into();
+
+            let stats = Stat::from_counts(&c, bin_size as usize, ci.clone());
+            files::write_stats(stats, output_prefix.clone());
+            files::write_errors(&c, output_prefix, chroms);
+
+            c
         })
         .reduce_with(|mut a, b| {
             a += b;
@@ -366,7 +378,7 @@ fn extract_main(
         let output_prefix: PathBuf =
             (output_prefix.to_string_lossy().to_string() + "total-").into();
 
-        let stats = Stat::from_counts(&total_counts, bin_size as usize);
+        let stats = Stat::from_counts(&total_counts, bin_size as usize, ci);
         files::write_stats(stats, output_prefix.clone());
         files::write_errors(&total_counts, output_prefix, chroms);
     }
