@@ -71,7 +71,7 @@ impl fmt::Display for Stat {
         let (lo, hi) = self.confidence_interval(&self.ci);
         write!(
             f,
-            "{}\t{}\t{}\t{}\t{}{}\t{}\t{}\t{:.8}\t{:.8}",
+            "{}\t{}\t{}\t{}\t{}{}\t{}\t{}\t{:e}\t{:e}",
             ["r1", "r2"][self.read12 as usize],
             ["f", "r"][self.fr as usize],
             Q_LOOKUP[self.bq_bin as usize],
@@ -80,8 +80,8 @@ impl fmt::Display for Stat {
             self.context[1],
             self.total_count,
             self.error_count,
-            lo,
-            hi,
+            lo.max(0.0),
+            hi.max(0.0),
         )
     }
 }
