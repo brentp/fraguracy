@@ -228,6 +228,20 @@ impl Counts {
         }
         let a_seq = a.seq();
         let b_seq = b.seq();
+        if a_seq.len() / bin_size as usize >= self.counts.cnts.dim().2 {
+            panic!(
+                "index out of bounds: specify a --max-read-length of at least {}",
+                a_seq.len()
+            )
+        }
+
+        if b_seq.len() / bin_size as usize >= self.counts.cnts.dim().2 {
+            panic!(
+                "index out of bounds: specify a --max-read-length of at least {}",
+                b_seq.len()
+            )
+        }
+
         let a_qual = a.qual();
         let b_qual = b.qual();
 
@@ -305,7 +319,7 @@ impl Counts {
                         let cmax = base_counts[4];
                         // if 3nd most common base is more than 50% of first, then we don't know which is right.
                         if base_counts[3] as f64 / cmax as f64 > 0.5 {
-                            log::info!(
+                            log::debug!(
                                 "skipping due to unknown truth given base_counts {:?}",
                                 base_counts
                             );

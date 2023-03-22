@@ -69,7 +69,7 @@ enum Commands {
         #[arg(
             short,
             long,
-            default_value_t = 150,
+            default_value_t = 151,
             help = "indicate the maximum read length in the alignment file"
         )]
         max_read_length: u8,
@@ -243,7 +243,7 @@ fn process_bam(
         None
     };
 
-    let bins = max_read_length / bin_size;
+    let bins = (max_read_length as f64 / bin_size as f64).ceil() as u32;
     let mut counts = fraguracy::Counts::new(Some(ibam), bins as usize);
 
     let mut n_total = 0;
