@@ -1,7 +1,8 @@
 # Fraguracy
 
 `fraguracy` calculates real error rates using overlapping paired-end reads in a fragment.
-While this does limit to the (potentially) small percentage of bases that overlap this can
+It reports a file of error positions and counts, along with a summary of errors by context, read-position, read-orientation (F or R) and base-quality.
+While the overlap requirment does limit to the (potentially) small percentage of bases that overlap this can
 still be useful to:
 
 1. evaluate error rates within and among samples
@@ -68,6 +69,8 @@ Options:
           only consider pairs where both reads have this mapping-quality or higher (good to leave this high) [default: 50]
   -c, --ci <CI>
           method for confidence interval calculation (see rust bpci crate) [default: agresti-coull] [possible values: agresti-coull, wald, wilson]
+  -t, --reference-as-truth
+          use reference base as 'truth'
   -h, --help
           Print help
 ```

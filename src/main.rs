@@ -102,6 +102,14 @@ enum Commands {
             default_value = "agresti-coull"
         )]
         ci: ConfidenceInterval,
+
+        #[arg(
+            short = 't',
+            long,
+            help = "use reference base as 'truth'",
+            default_value_t = false
+        )]
+        reference_as_truth: bool,
     },
     //Plot { tsv: PathBuf, },
 }
@@ -137,6 +145,7 @@ fn main() {
             max_read_length,
             min_mapping_quality,
             ci,
+            reference_as_truth,
         } => {
             extract_main(
                 bams,
@@ -148,6 +157,7 @@ fn main() {
                 max_read_length as u32,
                 min_mapping_quality,
                 ci,
+                reference_as_truth,
             );
         } //Commands::Plot { tsv } => plot::plot(tsv),
     }
@@ -229,6 +239,7 @@ fn process_bam(
     max_read_length: u32,
     min_mapping_quality: u8,
     min_base_qual: u8,
+    reference_as_truth: bool,
 ) -> (fraguracy::InnerCounts, Vec<String>, String) {
     let mut bam = Reader::from_path(&path).expect("error reading bam file {path}");
     bam.set_threads(3).expect("error setting threads");
@@ -255,7 +266,10 @@ fn process_bam(
     };
 
     let bins = (max_read_length as f64 / bin_size as f64).ceil() as u32;
-    let mut counts = fraguracy::Counts::new(Some(ibam), bins as usize);
+    let mut counts = fraguracy::Counts::new(
+        if reference_as_truth { None } else { Some(ibam) },
+        bins as usize,
+    );
 
     let mut n_total = 0;
     let mut n_pairs = 0;
@@ -353,6 +367,7 @@ fn extract_main(
     max_read_length: u32,
     min_mapping_quality: u8,
     ci: ConfidenceInterval,
+    reference_as_truth: bool,
 ) {
     //let args: Vec<String> = env::args().collect();
     let min_base_qual = 10u8;
@@ -369,6 +384,7 @@ fn extract_main(
                 max_read_length,
                 min_mapping_quality,
                 min_base_qual,
+                reference_as_truth,
             );
             let output_prefix: PathBuf =
                 (output_prefix.to_string_lossy().to_string() + &sample_name + "-").into();
