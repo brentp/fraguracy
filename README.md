@@ -1,8 +1,12 @@
 # Fraguracy
 
-`fraguracy` calculates real error rates using overlapping paired-end reads in a fragment. This avoids some bias.
-It does limit to the (potentially) small percentage of bases that overlap and it will sample less at the
-beginning of read 1 and the end of read2 (which are known to have increased error rates).
+`fraguracy` calculates real error rates using overlapping paired-end reads in a fragment.
+While this does limit to the (potentially) small percentage of bases that overlap this can
+still be useful to:
+
+1. evaluate error rates within and among samples
+2. find sites in the genome with high error rates
+3. find data-driven cutoffs for allele fraction (`AF`) cutoffs in UMI or duplex sequencing.
 
 # Usage
 
@@ -39,6 +43,34 @@ The plot.py will create an interactive plot that looks like this:
 
 ![frag-plot](https://user-images.githubusercontent.com/1739/225074861-7b5098d1-b5e9-4bab-8971-0a278f182aaa.png)
 
+## CLI
+
+```
+Usage: fraguracy extract [OPTIONS] [BAMS]...
+
+Arguments:
+  [BAMS]...  
+
+Options:
+  -f, --fasta <FASTA>
+          fasta for use with crams and/or to use as 'truth'
+  -o, --output-prefix <OUTPUT_PREFIX>
+          prefix for output files [default: fraguracy-]
+  -r, --regions <REGIONS>
+          restrict analysis to the regions given in this BED file
+  -e, --exclude-regions <EXCLUDE_REGIONS>
+          exclude from analysis the regions given in this BED file
+  -m, --max-read-length <MAX_READ_LENGTH>
+          indicate the maximum read length in the alignment file [default: 151]
+  -b, --bin-size <BIN_SIZE>
+          parition the read into chunks/bins of this size [default: 3]
+  -Q, --min-mapping-quality <MIN_MAPPING_QUALITY>
+          only consider pairs where both reads have this mapping-quality or higher (good to leave this high) [default: 50]
+  -c, --ci <CI>
+          method for confidence interval calculation (see rust bpci crate) [default: agresti-coull] [possible values: agresti-coull, wald, wilson]
+  -h, --help
+          Print help
+```
 
 ## Bins
 
