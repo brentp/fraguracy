@@ -50,7 +50,7 @@ for i, ctx in enumerate(contexts):
         text=[f'<b>{c}</b> of {n:,}' for c,
               n in zip(sub1["error_count"], sub1['total_count'])],
         line=dict(color=cols[i]))
-    t2 = go.Scatter(name='f{ctx}', x=np.array(sub2["read_pos"]), y=(1_000_000 * np.array(
+    t2 = go.Scatter(name=f'{ctx}', x=np.array(sub2["read_pos"]), y=(1_000_000 * np.array(
         sub2['rate'])),
         hovertemplate="rate/Mb: %{y:.2g}  <i>errors</i>:%{text}",
         text=[f'<b>{c}</b> of {n:,}' for c,
