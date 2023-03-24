@@ -220,7 +220,8 @@ impl Counts {
         bin_size: u32,
         fasta: &Option<faidx::Reader>,
         chrom: N,
-        tree: &Option<&Lapper<u32, u32>>,
+        include_tree: &Option<&Lapper<u32, u32>>,
+        exclude_tree: &Option<&Lapper<u32, u32>>,
     ) {
         let pieces = overlap_pieces(a.cigar(), b.cigar(), false);
         if pieces.len() == 0 {
@@ -258,8 +259,13 @@ impl Counts {
                 }
                 let genome_pos = g_chunk.start + (ai - a_chunk.start);
 
-                if let Some(t) = tree {
+                if let Some(t) = include_tree {
                     if t.count(genome_pos, genome_pos + 1) == 0 {
+                        continue;
+                    }
+                }
+                if let Some(t) = exclude_tree {
+                    if t.count(genome_pos, genome_pos + 1) != 0 {
                         continue;
                     }
                 }

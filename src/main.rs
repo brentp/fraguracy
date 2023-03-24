@@ -69,6 +69,13 @@ enum Commands {
         #[arg(
             short,
             long,
+            help = "exclude from analysis the regions given in this BED file"
+        )]
+        exclude_regions: Option<PathBuf>,
+
+        #[arg(
+            short,
+            long,
             default_value_t = 151,
             help = "indicate the maximum read length in the alignment file"
         )]
@@ -125,6 +132,7 @@ fn main() {
             fasta,
             output_prefix,
             regions,
+            exclude_regions,
             bin_size,
             max_read_length,
             min_mapping_quality,
@@ -135,6 +143,7 @@ fn main() {
                 fasta,
                 PathBuf::from(output_prefix),
                 regions,
+                exclude_regions,
                 bin_size as u32,
                 max_read_length as u32,
                 min_mapping_quality,
@@ -215,6 +224,7 @@ fn process_bam(
     path: PathBuf,
     fasta_path: Option<PathBuf>,
     regions: Option<PathBuf>,
+    exclude_regions: Option<PathBuf>,
     bin_size: u32,
     max_read_length: u32,
     min_mapping_quality: u8,
@@ -224,7 +234,8 @@ fn process_bam(
     bam.set_threads(3).expect("error setting threads");
     let mut map = FxHashMap::default();
 
-    let regions = read_bed(regions);
+    let include_regions = read_bed(regions);
+    let exclude_regions = read_bed(exclude_regions);
 
     let mut ibam =
         IndexedReader::from_path(&path).expect("bam file (path) must be sorted and indexed");
@@ -255,7 +266,8 @@ fn process_bam(
         .map(|n| unsafe { str::from_utf8_unchecked(n) }.to_string())
         .collect();
 
-    let mut tree: Option<&Lapper<u32, u32>> = get_tree(&regions, &chroms[0]);
+    let mut include_tree: Option<&Lapper<u32, u32>> = get_tree(&include_regions, &chroms[0]);
+    let mut exclude_tree: Option<&Lapper<u32, u32>> = get_tree(&exclude_regions, &chroms[0]);
 
     let hmap = bam::Header::from_template(bam.header()).to_hashmap();
     let sample_name = get_sample_name(hmap);
@@ -277,8 +289,11 @@ fn process_bam(
                 log::info!("processed chromosome: {}", chroms[last_tid as usize]);
                 last_tid = b.tid();
 
-                if regions.is_some() {
-                    tree = get_tree(&regions, &chroms[last_tid as usize]);
+                if include_regions.is_some() {
+                    include_tree = get_tree(&include_regions, &chroms[last_tid as usize]);
+                }
+                if exclude_regions.is_some() {
+                    exclude_tree = get_tree(&exclude_regions, &chroms[last_tid as usize]);
                 }
             }
 
@@ -308,7 +323,8 @@ fn process_bam(
                     bin_size,
                     &fasta,
                     &chroms[tid],
-                    &tree,
+                    &include_tree,
+                    &exclude_tree,
                 );
             } else {
                 log::warn!("not found: {:?}{:?}", name, b.pos());
@@ -332,6 +348,7 @@ fn extract_main(
     fasta_path: Option<PathBuf>,
     output_prefix: PathBuf,
     regions: Option<PathBuf>,
+    exclude_regions: Option<PathBuf>,
     bin_size: u32,
     max_read_length: u32,
     min_mapping_quality: u8,
@@ -347,6 +364,7 @@ fn extract_main(
                 path.clone(),
                 fasta_path.clone(),
                 regions.clone(),
+                exclude_regions.clone(),
                 bin_size,
                 max_read_length,
                 min_mapping_quality,
