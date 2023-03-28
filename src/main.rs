@@ -43,16 +43,15 @@ struct Cli {
 enum Commands {
     #[command(arg_required_else_help = true)]
     CombineErrors {
-        #[arg(short, long, help = "paths to errors.bed files from extract")]
         errors: Vec<PathBuf>,
 
         #[arg(
             short,
             long,
-            default_value_t = String::from("fraguracy-"),
-            help = "prefix for output files"
+            default_value_t = String::from("fraguracy-combined-errors.bed"),
+            help = "path for output bed file"
         )]
-        output_prefix: String,
+        output_path: String,
     },
 
     #[command(arg_required_else_help = true)]
@@ -173,8 +172,8 @@ fn main() -> std::io::Result<()> {
         ), //Commands::Plot { tsv } => plot::plot(tsv),
         Commands::CombineErrors {
             errors,
-            output_prefix,
-        } => combine_errors::combine_errors_main(errors, output_prefix),
+            output_path,
+        } => combine_errors::combine_errors_main(errors, output_path),
     }
 }
 

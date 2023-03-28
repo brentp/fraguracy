@@ -2,6 +2,7 @@ use crate::fraguracy::{InnerCounts, Stat};
 use std::string::String;
 
 use itertools::Itertools;
+use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 
 use std::io::Write;
@@ -50,7 +51,6 @@ pub(crate) fn write_errors(counts: &InnerCounts, output_prefix: PathBuf, chroms:
 use flate2::read::GzDecoder;
 use std::fs::File;
 use std::io::Read;
-use std::io::{BufRead, BufReader};
 
 /// Open a file path that may be gzipped.
 pub(crate) fn open_file(path: Option<PathBuf>) -> Option<Box<dyn BufRead>> {
@@ -60,18 +60,15 @@ pub(crate) fn open_file(path: Option<PathBuf>) -> Option<Box<dyn BufRead>> {
         return None;
     }
     let file = file.unwrap();
-    let mut buf = [0u8, 0u8];
-    let reader: Box<dyn BufRead> = if file.metadata().expect("eror getting metadata").len() > 2
-        && file
-            .try_clone()
-            .expect("erorr cloning file")
-            .read_exact(&mut buf)
-            .is_ok()
-        && &buf == b"\x1f\x8b"
-    {
-        Box::new(BufReader::new(GzDecoder::new(file)))
+    let mut buf_file = BufReader::new(file);
+
+    buf_file.fill_buf();
+    let gzipped = &buf_file.buffer()[0..2] == b"\x1f\x8b";
+
+    let reader: Box<dyn BufRead> = if gzipped {
+        Box::new(BufReader::new(GzDecoder::new(buf_file)))
     } else {
-        Box::new(BufReader::new(file))
+        Box::new(buf_file)
     };
     Some(reader)
 }
