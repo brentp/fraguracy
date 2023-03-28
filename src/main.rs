@@ -10,9 +10,7 @@ use linear_map::LinearMap;
 
 use rust_lapper::{Interval, Lapper};
 
-use flate2::read::GzDecoder;
-use std::fs::File;
-use std::io::{BufRead, BufReader, Read as IORead};
+use std::io::BufRead;
 
 type Iv = Interval<u32, u32>;
 

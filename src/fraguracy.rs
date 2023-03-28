@@ -487,6 +487,13 @@ lazy_static! {
         ['C', 'T']
     ];
     pub(crate) static ref Q_LOOKUP: [&'static str; 5] = ["0-5", "05-19", "20-36", "37-59", "60+"];
+    pub(crate) static ref REVERSE_Q_LOOKUP: HashMap<&'static str, u8> = HashMap::from([
+        ("0-5", 0),
+        ("05-19", 1),
+        ("20-36", 2),
+        ("37-59", 3),
+        ("60+", 4),
+    ]);
 }
 
 pub(crate) fn filter_read(r: &Rc<Record>) -> bool {
