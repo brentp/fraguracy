@@ -1,4 +1,5 @@
 use crate::fraguracy;
+use core::cmp::Reverse;
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 use std::error::Error;
@@ -16,7 +17,8 @@ struct Interval {
     file_i: u32,
 }
 struct IntervalHeap {
-    h: BinaryHeap<Interval>,
+    // min heap
+    h: BinaryHeap<Reverse<Interval>>,
     files: Vec<Box<dyn BufRead>>,
 }
 
@@ -36,7 +38,7 @@ impl IntervalHeap {
             let line = &fh.read_line(&mut buf);
             if line.is_ok() {
                 let r = parse_bed_line(&buf, file_i as u32);
-                ih.h.push(r.expect("Error reading first interval from file"))
+                ih.h.push(Reverse(r.expect("Error reading first interval from file")))
             }
         });
 
@@ -64,8 +66,8 @@ impl Iterator for IntervalHeap {
 
     /// pop an item out and then read in another interval from that file-handle
     fn next(&mut self) -> Option<Self::Item> {
-        let n = self.h.pop();
         if let Some(iv) = self.h.pop() {
+            let iv = iv.0;
             let file_i = iv.file_i;
             let fh = &mut self.files[file_i as usize];
             let mut buf = String::new();
@@ -73,13 +75,15 @@ impl Iterator for IntervalHeap {
             if line.is_ok() {
                 let r = parse_bed_line(&buf, file_i);
                 if let Ok(iv) = r {
-                    self.h.push(iv);
+                    self.h.push(Reverse(iv));
                 } else {
                     panic!("{:?}", r.err().unwrap());
                 }
             }
+            return Some(iv);
+        } else {
+            return None;
         }
-        return n;
     }
 }
 
