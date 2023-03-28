@@ -1,3 +1,4 @@
+mod combine_errors;
 mod files;
 mod fraguracy;
 //mod plot;
@@ -42,6 +43,20 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
+    #[command(arg_required_else_help = true)]
+    CombineErrors {
+        #[arg(short, long, help = "paths to errors.bed files from extract")]
+        errors: Vec<PathBuf>,
+
+        #[arg(
+            short,
+            long,
+            default_value_t = String::from("fraguracy-"),
+            help = "prefix for output files"
+        )]
+        output_prefix: String,
+    },
+
     #[command(arg_required_else_help = true)]
     Extract {
         #[arg(
@@ -127,7 +142,7 @@ fn get_sample_name(hmap: HashMap<String, Vec<LinearMap<String, String>>>) -> Str
     }
 }
 
-fn main() {
+fn main() -> std::io::Result<()> {
     let args = Cli::parse();
     if env::var("RUST_LOG").is_err() {
         env::set_var("RUST_LOG", "info")
@@ -146,20 +161,22 @@ fn main() {
             min_mapping_quality,
             ci,
             reference_as_truth,
-        } => {
-            extract_main(
-                bams,
-                fasta,
-                PathBuf::from(output_prefix),
-                regions,
-                exclude_regions,
-                bin_size as u32,
-                max_read_length as u32,
-                min_mapping_quality,
-                ci,
-                reference_as_truth,
-            );
-        } //Commands::Plot { tsv } => plot::plot(tsv),
+        } => extract_main(
+            bams,
+            fasta,
+            PathBuf::from(output_prefix),
+            regions,
+            exclude_regions,
+            bin_size as u32,
+            max_read_length as u32,
+            min_mapping_quality,
+            ci,
+            reference_as_truth,
+        ), //Commands::Plot { tsv } => plot::plot(tsv),
+        Commands::CombineErrors {
+            errors,
+            output_prefix,
+        } => combine_errors::combine_errors_main(errors, output_prefix),
     }
 }
 
@@ -168,40 +185,28 @@ fn read_bed(path: Option<PathBuf>) -> Option<HashMap<String, Lapper<u32, u32>>> 
         return None;
     }
 
-    let file = File::open(path.unwrap());
-    if !file.is_ok() {
+    let reader = files::open_file(path);
+    if !reader.is_some() {
         return None;
     }
-    let file = file.unwrap();
-    let mut buf = [0u8, 0u8];
-    let reader: Box<dyn BufRead> = if file.metadata().expect("eror getting metadata").len() > 2
-        && file
-            .try_clone()
-            .expect("erorr cloning file")
-            .read_exact(&mut buf)
-            .is_ok()
-        && &buf == b"\x1f\x8b"
-    {
-        Box::new(BufReader::new(GzDecoder::new(file)))
-    } else {
-        Box::new(BufReader::new(file))
-    };
-
     let mut bed = HashMap::new();
 
-    reader.lines().for_each(|l| {
-        let line = l.expect("error reading line");
-        let fields: Vec<_> = line.split('\t').collect();
-        if let (Ok(start), Ok(stop)) = (fields[1].parse::<u32>(), fields[2].parse::<u32>()) {
-            let iv = Iv {
-                start,
-                stop,
-                val: 0,
-            };
-            let chrom = String::from(fields[0]);
-            bed.entry(chrom).or_insert(Vec::new()).push(iv);
-        }
-    });
+    reader
+        .expect("checked that reader is available")
+        .lines()
+        .for_each(|l| {
+            let line = l.expect("error reading line");
+            let fields: Vec<_> = line.split('\t').collect();
+            if let (Ok(start), Ok(stop)) = (fields[1].parse::<u32>(), fields[2].parse::<u32>()) {
+                let iv = Iv {
+                    start,
+                    stop,
+                    val: 0,
+                };
+                let chrom = String::from(fields[0]);
+                bed.entry(chrom).or_insert(Vec::new()).push(iv);
+            }
+        });
 
     let mut tree: HashMap<String, Lapper<u32, u32>> = HashMap::new();
 
@@ -368,7 +373,7 @@ fn extract_main(
     min_mapping_quality: u8,
     ci: ConfidenceInterval,
     reference_as_truth: bool,
-) {
+) -> std::io::Result<()> {
     //let args: Vec<String> = env::args().collect();
     let min_base_qual = 20u8;
 
@@ -416,4 +421,5 @@ fn extract_main(
         files::write_stats(stats, output_prefix.clone());
         files::write_errors(&total_counts, output_prefix, chroms);
     }
+    Ok(())
 }
