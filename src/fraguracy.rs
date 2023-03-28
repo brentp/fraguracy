@@ -14,7 +14,7 @@ use std::str;
 
 #[derive(Eq, Hash, PartialEq, Ord, PartialOrd)]
 pub(crate) struct Position {
-    pub tid: i32,
+    pub tid: u16,
     pub pos: u32,
     pub bq_bin: u8,
 }
@@ -48,7 +48,7 @@ impl std::ops::AddAssign<InnerCounts> for InnerCounts {
         self.matches += o.matches;
 
         for (pos, cnt) in o.error_positions.into_iter() {
-            *self.error_positions.entry(pos).or_insert(0) += cnt;
+            *(self.error_positions.entry(pos)).or_insert(0) += cnt;
         }
     }
 }
@@ -342,7 +342,7 @@ impl Counts {
                     if real_base == 'N' {
                         log::warn!("got 'N' for {chrom:?}:{genome_pos} base skipping");
                         let pos = Position {
-                            tid: a.tid(),
+                            tid: a.tid() as u16,
                             pos: genome_pos,
                             // we don't know the bq, but assume it's the min. this very rarely happens so doesn't affect results.
                             bq_bin: aq.min(bq),
@@ -370,7 +370,7 @@ impl Counts {
                     } else {
                         // can't determine which is error base.
                         let pos = Position {
-                            tid: a.tid(),
+                            tid: a.tid() as u16,
                             pos: genome_pos,
                             // we don't know the bq, but assume it's the min. this very rarely happens so doesn't affect results.
                             bq_bin: aq.min(bq),
@@ -380,7 +380,7 @@ impl Counts {
                     };
 
                     let pos = Position {
-                        tid: a.tid(),
+                        tid: a.tid() as u16,
                         pos: genome_pos,
                         bq_bin: err_index[3] as u8,
                     };
@@ -759,5 +759,10 @@ mod tests {
         ];
 
         assert_eq!(r, expected);
+    }
+
+    #[test]
+    fn test_size() {
+        assert_eq!(std::mem::size_of::<Position>(), 8);
     }
 }

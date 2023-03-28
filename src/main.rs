@@ -370,7 +370,7 @@ fn extract_main(
     reference_as_truth: bool,
 ) {
     //let args: Vec<String> = env::args().collect();
-    let min_base_qual = 10u8;
+    let min_base_qual = 20u8;
 
     let total_counts = paths
         .par_iter()

@@ -11,7 +11,7 @@ still be useful to:
 
 # Usage
 
-The `fraguracy` binary available in releases takes a bam file (cram supported soon) and outputs error stats. The plotting is currently done via python.
+The `fraguracy` binary available in releases takes a bam or cram file and outputs error stats. The plotting is currently done via python.
 
 ```
 $ fraguracy extract \
@@ -43,6 +43,9 @@ be created which sum all values for all samples.
 The plot.py will create an interactive plot that looks like this:
 
 ![frag-plot](https://user-images.githubusercontent.com/1739/225074861-7b5098d1-b5e9-4bab-8971-0a278f182aaa.png)
+
+**NOTE** that depending on the goal it can be useful to run `fraguracy extract` once, then exclude sites that are very frequent errors and re-run,
+this will prevent a small percentage of sites (often around homopolymers) from dominating the error profile.
 
 ## CLI
 
