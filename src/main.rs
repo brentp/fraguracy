@@ -50,6 +50,8 @@ enum Commands {
             help = "path for to fai (not fasta) file"
         )]
         fai_path: PathBuf,
+
+        #[arg(help = "path to error bed files from extract")]
         errors: Vec<PathBuf>,
 
         #[arg(

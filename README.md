@@ -78,6 +78,26 @@ Options:
           Print help
 ```
 
+### Combine
+
+`fraguracy extract` can also be run per-sample and then errors can be combined with `fraguracy combine-errors`:
+
+```
+Usage: fraguracy combine-errors [OPTIONS] --fai-path <FAI_PATH> [ERRORS]...
+
+Arguments:
+  [ERRORS]...  path to error bed files from extract
+
+Options:
+  -f, --fai-path <FAI_PATH>        path for to fai (not fasta) file
+  -o, --output-path <OUTPUT_PATH>  path for output bed file [default: fraguracy-combined-errors.bed]
+  -h, --help                       Print help
+```
+
+The output is a single file with the error counts from each sample summed. And an additional column indicating the
+number of samples that containing the error is reported.
+
+
 ## Bins
 
 The aim is to create a model of errors. Many factors can be predictive of the likelihood of an error.

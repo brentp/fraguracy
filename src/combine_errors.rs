@@ -1,23 +1,24 @@
 use crate::fraguracy;
 use core::cmp::Reverse;
+use itertools::Itertools;
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 use std::collections::HashMap;
 use std::error::Error;
 use std::fs::File;
 use std::io;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::PathBuf;
 use std::string::String;
 
 #[derive(Eq, Debug)]
 struct Interval {
-    // NOTE: BSP. might need tid from fai to do sorting if data is too sparse.
     tid: i32,
     chrom: String,
     start: u32,
     end: u32,
     group: u8,
+    count: u32,
     file_i: u32,
 }
 struct IntervalHeap {
@@ -28,7 +29,7 @@ struct IntervalHeap {
 }
 
 fn read_fai(path: PathBuf) -> HashMap<String, i32> {
-    let f = File::open(path);
+    let f = File::open(&path);
     let mut h = HashMap::new();
     if let Ok(fu) = f {
         for l in BufReader::new(fu).lines() {
@@ -38,8 +39,16 @@ fn read_fai(path: PathBuf) -> HashMap<String, i32> {
                 .into_iter()
                 .next()
                 .expect("expected at least one value per line in faidx");
+            if chrom.chars().nth(0) == Some('>') {
+                log::warn!(
+                    "expecting fai, NOT fasta for argument found chrom of {}",
+                    chrom
+                );
+            }
             h.insert(String::from(chrom), h.len() as i32);
         }
+    } else {
+        panic!("couldn't open file: {:?}", path.to_string_lossy());
     }
     h
 }
@@ -83,13 +92,12 @@ fn parse_bed_line(
         group: (*fraguracy::REVERSE_Q_LOOKUP
             .get(toks[3].trim())
             .expect(&format!("unknown bq bin: {}", toks[3]))),
+        count: str::parse::<u32>(toks[4].trim())?,
         file_i: file_i,
     };
     iv.tid = chrom_to_tid[&iv.chrom];
     Ok(iv)
 }
-
-//fn parse_bed_line(line: &String) -> Result<Interval, std::io::Error> {
 
 impl Iterator for IntervalHeap {
     type Item = Interval;
@@ -167,9 +175,24 @@ pub(crate) fn combine_errors_main(
     output_path: String,
 ) -> io::Result<()> {
     let ih = IntervalHeap::new(paths, fai_path);
+    let f = File::create(&output_path)?;
+    let mut w = BufWriter::new(f);
+    write!(w, "#chrom\tstart\tend\tbq_bin\tcount\tn_samples\n")?;
 
-    for iv in ih.into_iter() {
-        eprintln!("{:?}", iv);
+    for (_, ivs) in &ih
+        .into_iter()
+        .group_by(|iv| (iv.tid, iv.start, iv.end, iv.group))
+    {
+        let ivs: Vec<Interval> = ivs.into_iter().collect();
+        let n = ivs.iter().filter(|iv| iv.count > 0).count();
+        let count: u32 = ivs.iter().map(|iv| iv.count).sum();
+
+        write!(
+            w,
+            "{}\t{}\t{}\t{}\t{}\t{}\n",
+            ivs[0].chrom, ivs[0].start, ivs[0].end, ivs[0].group, count, n
+        )?;
     }
-    Ok(())
+    log::info!("wrote {}", output_path);
+    w.flush()
 }
