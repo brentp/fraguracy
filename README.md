@@ -16,7 +16,7 @@ The `fraguracy` binary available in releases takes a bam or cram file and output
 ```
 $ fraguracy extract \
     --bin-size 1 \
-    --output-prefix fraguracy-$sample-consensus- \
+    --output-prefix fraguracy-$sample- \
     --fasta $reference \
     $sample.bam [.. *.bam] \
 
