@@ -50,7 +50,6 @@ pub(crate) fn write_errors(counts: &InnerCounts, output_prefix: PathBuf, chroms:
 
 use flate2::read::GzDecoder;
 use std::fs::File;
-use std::io::Read;
 
 /// Open a file path that may be gzipped.
 pub(crate) fn open_file(path: Option<PathBuf>) -> Option<Box<dyn BufRead>> {
@@ -62,8 +61,8 @@ pub(crate) fn open_file(path: Option<PathBuf>) -> Option<Box<dyn BufRead>> {
     let file = file.unwrap();
     let mut buf_file = BufReader::new(file);
 
-    buf_file.fill_buf();
-    let gzipped = &buf_file.buffer()[0..2] == b"\x1f\x8b";
+    let b = buf_file.fill_buf().expect("error reading from file");
+    let gzipped = &b[0..2] == b"\x1f\x8b";
 
     let reader: Box<dyn BufRead> = if gzipped {
         Box::new(BufReader::new(GzDecoder::new(buf_file)))

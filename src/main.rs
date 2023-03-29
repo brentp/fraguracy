@@ -43,6 +43,13 @@ struct Cli {
 enum Commands {
     #[command(arg_required_else_help = true)]
     CombineErrors {
+        #[arg(
+            short,
+            long,
+            required = true,
+            help = "path for to fai (not fasta) file"
+        )]
+        fai_path: PathBuf,
         errors: Vec<PathBuf>,
 
         #[arg(
@@ -171,9 +178,10 @@ fn main() -> std::io::Result<()> {
             reference_as_truth,
         ), //Commands::Plot { tsv } => plot::plot(tsv),
         Commands::CombineErrors {
+            fai_path,
             errors,
             output_path,
-        } => combine_errors::combine_errors_main(errors, output_path),
+        } => combine_errors::combine_errors_main(errors, fai_path, output_path),
     }
 }
 
