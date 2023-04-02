@@ -1,3 +1,4 @@
+mod combine_counts;
 mod combine_errors;
 mod files;
 mod fraguracy;
@@ -59,6 +60,20 @@ enum Commands {
             long,
             default_value_t = String::from("fraguracy-combined-errors.bed"),
             help = "path for output bed file"
+        )]
+        output_path: String,
+    },
+
+    #[command(arg_required_else_help = true)]
+    CombineCounts {
+        #[arg(help = "path to counts.txt files from extract")]
+        counts: Vec<PathBuf>,
+
+        #[arg(
+            short,
+            long,
+            default_value_t = String::from("fraguracy-combined-counts.bed"),
+            help = "path for output counts file"
         )]
         output_path: String,
     },
@@ -184,6 +199,11 @@ fn main() -> std::io::Result<()> {
             errors,
             output_path,
         } => combine_errors::combine_errors_main(errors, fai_path, output_path),
+
+        Commands::CombineCounts {
+            counts,
+            output_path,
+        } => combine_counts::combine_counts_main(counts, output_path),
     }
 }
 
