@@ -3,7 +3,7 @@ use std::io;
 use std::path::PathBuf;
 use std::string::String;
 
-#[derive(Hash, Debug, PartialOrd, PartialEq, Ord, Eq)]
+#[derive(Hash, Debug, PartialOrd, PartialEq, Ord, Eq, Clone)]
 pub(crate) struct Count {
     read12: u8,
     orientation: u8,
@@ -21,6 +21,8 @@ impl std::ops::AddAssign<Count> for Count {
         assert!(self.read_pos == o.read_pos);
         assert!(self.bq_bin == o.bq_bin);
         assert!(self.context == o.context);
+        self.errors += o.errors;
+        self.total += o.total;
     }
 }
 
@@ -94,5 +96,23 @@ mod tests {
         assert_eq!(c.context, ['A', 'C']);
         assert_eq!(c.total, 61502);
         assert_eq!(c.errors, 609);
+    }
+
+    #[test]
+    fn test_add_count() {
+        let mut a = Count {
+            read12: 0,
+            orientation: 1,
+            bq_bin: 2,
+            read_pos: 3,
+            context: ['A', 'T'],
+            total: 32,
+            errors: 1,
+        };
+        let mut b = a.clone();
+        b.errors = 3;
+        a += b;
+
+        assert_eq!(a.errors, 4);
     }
 }
