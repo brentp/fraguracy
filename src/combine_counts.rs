@@ -1,5 +1,6 @@
 use crate::fraguracy;
 use std::io;
+use std::io::BufRead;
 use std::path::PathBuf;
 use std::string::String;
 
@@ -77,10 +78,37 @@ impl Count {
     }
 }
 
-pub(crate) fn combine_counts_main(counts: Vec<PathBuf>, output_path: String) -> io::Result<()> {
+pub(crate) fn combine_counts_main(
+    counts_files: Vec<PathBuf>,
+    output_path: String,
+) -> io::Result<()> {
+    let mut counts: std::collections::HashSet<Count> = std::collections::HashSet::new();
+    for count_file in counts_files.iter() {
+        // open each file and read each line.
+        let file = std::fs::File::open(count_file)?;
+        let reader = std::io::BufReader::new(file);
+        for line in reader.lines() {
+            let line = line?;
+            let mut c = Count::from_line(&line);
+            let entry = counts.get(&c);
+            if let Some(entry) = entry {
+                c.total += entry.total;
+                c.errors += entry.errors;
+            }
+            counts.insert(c);
+        }
+    }
+
+    let mut counts: Vec<Count> = counts.into_iter().collect();
+    counts.sort();
+    for c in counts.iter() {
+        dbg!(c);
+    }
+
     Ok(())
 }
 
+#[cfg(test)]
 mod tests {
     use super::*;
 
