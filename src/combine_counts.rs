@@ -30,22 +30,15 @@ impl std::ops::AddAssign<Count> for Count {
 impl Count {
     fn from_line(s: &str) -> Count {
         let mut sp = s.trim().split('\t');
-        eprintln!("splitting: {}", s);
         Count {
             read12: sp.next().expect("not enough columns in line {s}")[1..]
                 .parse::<u8>()
                 .expect("error parsing int")
                 - 1,
-            orientation: if sp
-                .next()
-                .expect("not enough columns in line {s}")
-                .chars()
-                .nth(1)
-                == Some('f')
-            {
-                0
-            } else {
-                1
+            orientation: match sp.next() {
+                Some("f") => 0,
+                Some("r") => 1,
+                _ => panic!("error parsing orientation expected f or r"),
             },
             bq_bin: fraguracy::REVERSE_Q_LOOKUP[sp.next().expect("not enough columns in line {s}")],
             read_pos: sp
@@ -141,7 +134,7 @@ mod tests {
 
         let c = Count::from_line(line);
         assert_eq!(c.read12, 0);
-        assert_eq!(c.orientation, 1);
+        assert_eq!(c.orientation, 0);
         assert_eq!(c.bq_bin, 1);
         assert_eq!(c.read_pos, 0);
         assert_eq!(c.context, ['A', 'C']);

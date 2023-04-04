@@ -42,7 +42,10 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
-    #[command(arg_required_else_help = true)]
+    #[command(
+        arg_required_else_help = true,
+        about = "combine error bed files from extract"
+    )]
     CombineErrors {
         #[arg(
             short,
@@ -64,7 +67,10 @@ enum Commands {
         output_path: String,
     },
 
-    #[command(arg_required_else_help = true)]
+    #[command(
+        arg_required_else_help = true,
+        about = "combine counts.txt files from extract"
+    )]
     CombineCounts {
         #[arg(help = "path to counts.txt files from extract")]
         counts: Vec<PathBuf>,
@@ -78,7 +84,10 @@ enum Commands {
         output_path: String,
     },
 
-    #[command(arg_required_else_help = true)]
+    #[command(
+        arg_required_else_help = true,
+        about = "error profile pair overlaps in bam/cram"
+    )]
     Extract {
         #[arg(
             short,
