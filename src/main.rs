@@ -72,7 +72,7 @@ enum Commands {
         #[arg(
             short,
             long,
-            default_value_t = String::from("fraguracy-combined-counts.bed"),
+            default_value_t = String::from("fraguracy-combined-counts.txt"),
             help = "path for output counts file"
         )]
         output_path: String,

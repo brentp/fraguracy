@@ -1,6 +1,6 @@
 use crate::fraguracy;
 use std::io;
-use std::io::BufRead;
+use std::io::{BufRead, Write};
 use std::path::PathBuf;
 use std::string::String;
 
@@ -83,14 +83,23 @@ pub(crate) fn combine_counts_main(
     output_path: String,
 ) -> io::Result<()> {
     let mut counts: std::collections::HashSet<Count> = std::collections::HashSet::new();
+    let mut header: String = String::new();
     for count_file in counts_files.iter() {
         // open each file and read each line.
         let file = std::fs::File::open(count_file)?;
         let reader = std::io::BufReader::new(file);
-        for line in reader.lines() {
+        for (i, line) in reader.lines().enumerate() {
             let line = line?;
+            if i == 0 {
+                assert!(
+                    line.starts_with("read12"),
+                    "expecting header line from counts file"
+                );
+                header = line;
+                continue;
+            }
             let mut c = Count::from_line(&line);
-            let entry = counts.get(&c);
+            let entry = counts.take(&c);
             if let Some(entry) = entry {
                 c.total += entry.total;
                 c.errors += entry.errors;
@@ -99,10 +108,24 @@ pub(crate) fn combine_counts_main(
         }
     }
 
+    let mut out = std::fs::File::create(output_path)?;
+    write!(out, "{}\n", header)?;
+
     let mut counts: Vec<Count> = counts.into_iter().collect();
     counts.sort();
     for c in counts.iter() {
-        dbg!(c);
+        write!(
+            out,
+            "r{}\t{}\t{}\t{}\t{}{}\t{}\t{}\n",
+            c.read12 + 1,
+            ['f', 'r'][c.orientation as usize],
+            fraguracy::Q_LOOKUP[c.bq_bin as usize],
+            c.read_pos,
+            c.context[0],
+            c.context[1],
+            c.total,
+            c.errors
+        )?;
     }
 
     Ok(())
