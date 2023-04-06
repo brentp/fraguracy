@@ -66,15 +66,21 @@ impl IntervalHeap {
             chom_to_tid: read_fai(fai_path),
         };
 
-        ih.files.iter_mut().enumerate().for_each(|(file_i, fh)| {
-            let mut buf = String::new();
-            let line = fh.read_line(&mut buf);
-            if line.is_ok() {
-                let r = parse_bed_line(&buf, file_i as u32, &(ih.chom_to_tid));
-                ih.h.push(Reverse(r.expect("Error reading first interval from file")))
-            }
-        });
-
+        ih.files
+            .iter_mut()
+            .enumerate()
+            .for_each(|(file_i, fh)| loop {
+                // loop to skip '#' comment lines
+                let mut buf = String::new();
+                let line = fh.read_line(&mut buf);
+                if line.is_ok() && buf.chars().nth(0) != Some('#') {
+                    let r = parse_bed_line(&buf, file_i as u32, &(ih.chom_to_tid));
+                    ih.h.push(Reverse(
+                        r.expect(&format!("Error parsing first line from file: '{buf}'")),
+                    ));
+                    break;
+                }
+            });
         ih
     }
 }
