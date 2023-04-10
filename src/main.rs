@@ -282,15 +282,15 @@ fn process_bam(
     min_base_qual: u8,
     reference_as_truth: bool,
 ) -> (fraguracy::InnerCounts, Vec<String>, String) {
-    let mut bam = Reader::from_path(&path).expect("error reading bam file {path}");
+    let mut bam = Reader::from_path(&path).expect(&format!("error reading bam file {path:?}"));
     bam.set_threads(3).expect("error setting threads");
     let mut map = FxHashMap::default();
 
     let include_regions = read_bed(regions);
     let exclude_regions = read_bed(exclude_regions);
 
-    let mut ibam =
-        IndexedReader::from_path(&path).expect("bam file (path) must be sorted and indexed");
+    let mut ibam = IndexedReader::from_path(&path)
+        .expect(&format!("bam file {path:?} must be sorted and indexed"));
     ibam.set_threads(3)
         .expect("error setting threads on indexed reader");
 
