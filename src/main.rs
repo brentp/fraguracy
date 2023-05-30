@@ -163,12 +163,12 @@ fn get_sample_name(hmap: HashMap<String, Vec<LinearMap<String, String>>>) -> Str
     if let Some(lm) = hmap.get("RG") {
         let sm = String::from("SM");
         if let Some(v) = lm[0].get(&sm) {
-            return (*v).clone();
+            (*v).clone()
         } else {
-            return String::from("");
+            String::from("")
         }
     } else {
-        return String::from("");
+        String::from("")
     }
 }
 
@@ -217,14 +217,10 @@ fn main() -> std::io::Result<()> {
 }
 
 fn read_bed(path: Option<PathBuf>) -> Option<HashMap<String, Lapper<u32, u32>>> {
-    if path.is_none() {
-        return None;
-    }
+    path.as_ref()?;
 
     let reader = files::open_file(path);
-    if !reader.is_some() {
-        return None;
-    }
+    reader.as_ref()?;
     let mut bed = HashMap::new();
 
     reader
@@ -259,18 +255,14 @@ fn get_tree<'a>(
     chrom: &String,
 ) -> Option<&'a Lapper<u32, u32>> {
     let tree: Option<&Lapper<u32, u32>> = if let Some(r) = regions {
-        let l = r.get(chrom);
-        if l.is_none() {
-            None
-        } else {
-            Some(l.unwrap())
-        }
+        r.get(chrom)
     } else {
         None
     };
     tree
 }
 
+#[allow(clippy::too_many_arguments)]
 fn process_bam(
     path: PathBuf,
     fasta_path: Option<PathBuf>,
@@ -282,7 +274,8 @@ fn process_bam(
     min_base_qual: u8,
     reference_as_truth: bool,
 ) -> (fraguracy::InnerCounts, Vec<String>, String) {
-    let mut bam = Reader::from_path(&path).expect(&format!("error reading bam file {path:?}"));
+    let mut bam =
+        Reader::from_path(&path).unwrap_or_else(|_| panic!("error reading bam file {path:?}"));
     bam.set_threads(3).expect("error setting threads");
     let mut map = FxHashMap::default();
 
@@ -290,11 +283,11 @@ fn process_bam(
     let exclude_regions = read_bed(exclude_regions);
 
     let mut ibam = IndexedReader::from_path(&path)
-        .expect(&format!("bam file {path:?} must be sorted and indexed"));
+        .unwrap_or_else(|_| panic!("bam file {path:?} must be sorted and indexed"));
     ibam.set_threads(3)
         .expect("error setting threads on indexed reader");
 
-    let fasta: Option<faidx::Reader> = if let Some(fa_path) = fasta_path.clone() {
+    let fasta: Option<faidx::Reader> = if let Some(fa_path) = fasta_path {
         bam.set_reference(&fa_path)
             .expect("Error setting reference for file");
         ibam.set_reference(&fa_path)
@@ -357,7 +350,7 @@ fn process_bam(
             // to support more files.
             if !map.contains_key(&name) {
                 assert!(!map.contains_key(&name));
-                map.insert(name, b.clone());
+                map.insert(name, b);
             } else if let Some(a) = map.remove(&name) {
                 if a.mapq() < min_mapping_quality {
                     return;
@@ -395,9 +388,10 @@ fn process_bam(
         counts.counts.matches,
     );
 
-    return (counts.counts, chroms, sample_name);
+    (counts.counts, chroms, sample_name)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn extract_main(
     paths: Vec<PathBuf>,
     fasta_path: Option<PathBuf>,

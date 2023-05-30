@@ -19,10 +19,10 @@ pub(crate) fn write_stats(stats: Vec<Stat>, output_prefix: PathBuf) {
     )
     .expect("error opening file!");
 
-    write!(fh, "{header}\n").expect("error writing to file");
+    writeln!(fh, "{header}").expect("error writing to file");
     stats
         .iter()
-        .for_each(|s| _ = write!(fh, "{s}\n").expect("error writing to file"));
+        .for_each(|s| writeln!(fh, "{s}").expect("error writing to file"));
 }
 
 pub(crate) fn write_errors(counts: &InnerCounts, output_prefix: PathBuf, chroms: Vec<String>) {
@@ -34,7 +34,7 @@ pub(crate) fn write_errors(counts: &InnerCounts, output_prefix: PathBuf, chroms:
             + "errors.bed",
     )
     .expect("error opening file!");
-    write!(errfh, "#chrom\tstart\tend\tbq_bin\tcount\n").expect("error writing to file");
+    writeln!(errfh, "#chrom\tstart\tend\tbq_bin\tcount").expect("error writing to file");
 
     for pos in counts.error_positions.keys().sorted() {
         //for (pos, cnt) in (&counts.error_positions).iter() {
@@ -43,7 +43,7 @@ pub(crate) fn write_errors(counts: &InnerCounts, output_prefix: PathBuf, chroms:
         let position = pos.pos;
         let end = position + 1;
         let bqs = crate::fraguracy::Q_LOOKUP[pos.bq_bin as usize];
-        write!(errfh, "{chrom}\t{position}\t{end}\t{bqs}\t{cnt}\n")
+        writeln!(errfh, "{chrom}\t{position}\t{end}\t{bqs}\t{cnt}")
             .expect("error writing to error file");
     }
 }
@@ -54,7 +54,7 @@ use std::fs::File;
 /// Open a file path that may be gzipped.
 pub(crate) fn open_file(path: Option<PathBuf>) -> Option<Box<dyn BufRead>> {
     let file = File::open(path.unwrap());
-    if !file.is_ok() {
+    if file.is_err() {
         eprintln!("error opening file: {}", file.unwrap_err());
         return None;
     }

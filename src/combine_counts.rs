@@ -102,14 +102,14 @@ pub(crate) fn combine_counts_main(
     }
 
     let mut out = std::fs::File::create(output_path)?;
-    write!(out, "{}\n", header)?;
+    writeln!(out, "{}", header)?;
 
     let mut counts: Vec<Count> = counts.into_iter().collect();
     counts.sort();
     for c in counts.iter() {
-        write!(
+        writeln!(
             out,
-            "r{}\t{}\t{}\t{}\t{}{}\t{}\t{}\n",
+            "r{}\t{}\t{}\t{}\t{}{}\t{}\t{}",
             c.read12 + 1,
             ['f', 'r'][c.orientation as usize],
             fraguracy::Q_LOOKUP[c.bq_bin as usize],

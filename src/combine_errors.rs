@@ -36,10 +36,9 @@ fn read_fai(path: PathBuf) -> HashMap<String, i32> {
             let l = l.expect("error parsing faidx");
             let chrom = l
                 .split('\t')
-                .into_iter()
                 .next()
                 .expect("expected at least one value per line in faidx");
-            if chrom.chars().nth(0) == Some('>') {
+            if chrom.starts_with('>') {
                 log::warn!(
                     "expecting fai, NOT fasta for argument found chrom of {}",
                     chrom
@@ -73,7 +72,7 @@ impl IntervalHeap {
                 // loop to skip '#' comment lines
                 let mut buf = String::new();
                 let line = fh.read_line(&mut buf);
-                if line.is_ok() && buf.chars().nth(0) != Some('#') {
+                if line.is_ok() && buf.starts_with('#') {
                     let r = parse_bed_line(&buf, file_i as u32, &(ih.chom_to_tid));
                     ih.h.push(Reverse(
                         r.expect(&format!("Error parsing first line from file: '{buf}'")),
@@ -85,7 +84,7 @@ impl IntervalHeap {
     }
 }
 fn parse_bed_line(
-    line: &String,
+    line: &str,
     file_i: u32,
     chrom_to_tid: &HashMap<String, i32>,
 ) -> Result<Interval, Box<dyn Error>> {
@@ -97,9 +96,9 @@ fn parse_bed_line(
         end: str::parse::<u32>(toks[2])?,
         group: (*fraguracy::REVERSE_Q_LOOKUP
             .get(toks[3].trim())
-            .expect(&format!("unknown bq bin: {}", toks[3]))),
+            .unwrap_or_else(|| panic!("unknown bq bin: {}", toks[3]))),
         count: str::parse::<u32>(toks[4].trim())?,
-        file_i: file_i,
+        file_i,
     };
     iv.tid = chrom_to_tid[&iv.chrom];
     Ok(iv)
@@ -124,19 +123,16 @@ impl Iterator for IntervalHeap {
                     panic!("{:?}", r.err().unwrap());
                 }
             }
-            return Some(pop_iv);
+            Some(pop_iv)
         } else {
-            return None;
+            None
         }
     }
 }
 
 impl PartialEq for Interval {
     fn eq(&self, b: &Interval) -> bool {
-        return self.chrom == b.chrom
-            && self.start == b.start
-            && self.end == b.end
-            && self.group == b.group;
+        self.chrom == b.chrom && self.start == b.start && self.end == b.end && self.group == b.group
     }
 }
 
@@ -171,7 +167,7 @@ impl PartialOrd for Interval {
 
 impl Ord for Interval {
     fn cmp(&self, b: &Interval) -> std::cmp::Ordering {
-        return self.partial_cmp(b).expect("cmp: not expecting None");
+        self.partial_cmp(b).expect("cmp: not expecting None")
     }
 }
 
@@ -183,7 +179,7 @@ pub(crate) fn combine_errors_main(
     let ih = IntervalHeap::new(paths, fai_path);
     let f = File::create(&output_path)?;
     let mut w = BufWriter::new(f);
-    write!(w, "#chrom\tstart\tend\tbq_bin\tcount\tn_samples\n")?;
+    writeln!(w, "#chrom\tstart\tend\tbq_bin\tcount\tn_samples")?;
 
     for (_, ivs) in &ih
         .into_iter()
@@ -193,9 +189,9 @@ pub(crate) fn combine_errors_main(
         let n = ivs.iter().filter(|iv| iv.count > 0).count();
         let count: u32 = ivs.iter().map(|iv| iv.count).sum();
 
-        write!(
+        writeln!(
             w,
-            "{}\t{}\t{}\t{}\t{}\t{}\n",
+            "{}\t{}\t{}\t{}\t{}\t{}",
             ivs[0].chrom, ivs[0].start, ivs[0].end, ivs[0].group, count, n
         )?;
     }

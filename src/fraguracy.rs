@@ -86,18 +86,13 @@ impl fmt::Display for Stat {
     }
 }
 
-#[derive(Debug, Clone, clap::ValueEnum)]
+#[derive(Debug, Clone, clap::ValueEnum, Default)]
 pub enum ConfidenceInterval {
+    #[default]
     AgrestiCoull,
     Wald,
     Wilson,
     //WilsonWithCC,
-}
-
-impl Default for ConfidenceInterval {
-    fn default() -> Self {
-        ConfidenceInterval::AgrestiCoull
-    }
 }
 
 impl fmt::Display for ConfidenceInterval {
@@ -121,7 +116,7 @@ impl Stat {
             ConfidenceInterval::Wilson => sample.wilson_score(1.960),
         };
 
-        return (f.lower(), f.upper());
+        (f.lower(), f.upper())
     }
 
     pub(crate) fn from_counts(
@@ -211,6 +206,7 @@ impl Counts {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn increment<N: AsRef<str> + std::fmt::Debug>(
         &mut self,
         a: Rc<Record>,
@@ -224,7 +220,7 @@ impl Counts {
         exclude_tree: &Option<&Lapper<u32, u32>>,
     ) {
         let pieces = overlap_pieces(a.cigar(), b.cigar(), false);
-        if pieces.len() == 0 {
+        if pieces.is_empty() {
             return;
         }
         let a_seq = a.seq();
@@ -313,7 +309,7 @@ impl Counts {
 
                     let real_base = if self.ibam.is_some() {
                         let mut base_counts = pile(
-                            &mut (self.ibam.as_mut().unwrap()),
+                            self.ibam.as_mut().unwrap(),
                             a.tid(),
                             genome_pos,
                             min_map_qual,
@@ -460,23 +456,23 @@ fn pile(
                 }
             });
         });
-    return base_counts;
+    base_counts
 }
 
 lazy_static! {
     pub(crate) static ref CONTEXT_LOOKUP: HashMap<(u8, u8), usize> = HashMap::from([
-        (('T' as u8, 'G' as u8), 0usize),
-        (('A' as u8, 'C' as u8), 0usize),
-        (('T' as u8, 'C' as u8), 1usize),
-        (('A' as u8, 'G' as u8), 1usize),
-        (('T' as u8, 'A' as u8), 2usize),
-        (('A' as u8, 'T' as u8), 2usize),
-        (('C' as u8, 'A' as u8), 3usize),
-        (('G' as u8, 'T' as u8), 3usize),
-        (('C' as u8, 'G' as u8), 4usize),
-        (('G' as u8, 'C' as u8), 4usize),
-        (('C' as u8, 'T' as u8), 5usize),
-        (('G' as u8, 'A' as u8), 5usize),
+        ((b'T', b'G'), 0usize),
+        ((b'A', b'C'), 0usize),
+        ((b'T', b'C'), 1usize),
+        ((b'A', b'G'), 1usize),
+        ((b'T', b'A'), 2usize),
+        ((b'A', b'T'), 2usize),
+        ((b'C', b'A'), 3usize),
+        ((b'G', b'T'), 3usize),
+        ((b'C', b'G'), 4usize),
+        ((b'G', b'C'), 4usize),
+        ((b'C', b'T'), 5usize),
+        ((b'G', b'A'), 5usize),
     ]);
     pub(crate) static ref CONTEXT_TO_CONTEXT2: [[char; 2]; 6] = [
         ['A', 'C'],
@@ -516,28 +512,26 @@ pub struct Coordinates {
 
 #[inline(always)]
 fn is_insertion(a: Cigar) -> bool {
-    return match a {
-        Cigar::Ins(_) => true,
-        _ => false,
-    };
+    matches!(a, Cigar::Ins(_))
 }
+
 #[inline(always)]
 fn query(a: Cigar) -> i64 {
-    return match a {
+    match a {
         Cigar::Match(n) | Cigar::SoftClip(n) | Cigar::Ins(n) | Cigar::Diff(n) | Cigar::Equal(n) => {
             n as i64
         }
         _ => 0,
-    };
+    }
 }
 #[inline(always)]
 fn reference(a: Cigar) -> i64 {
-    return match a {
+    match a {
         Cigar::Match(n) | Cigar::Del(n) | Cigar::Diff(n) | Cigar::Equal(n) | Cigar::RefSkip(n) => {
             n as i64
         }
         _ => 0,
-    };
+    }
 }
 
 /// Return mapped parts of each read that overlap the other.
@@ -633,7 +627,7 @@ fn overlap_pieces(
         }
     }
 
-    return result;
+    result
 }
 
 #[cfg(test)]
