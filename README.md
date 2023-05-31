@@ -1,3 +1,7 @@
+<!--- 
+# static binary build
+RUSTFLAGS="-C target-feature=+crt-static" cargo build --release  --target x86_64-unknown-linux-gnu
+--->
 # Fraguracy
 
 `fraguracy` calculates real error rates using overlapping paired-end reads in a fragment.

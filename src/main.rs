@@ -348,34 +348,36 @@ fn process_bam(
             // by not checking the order here, we allow bams sorted by read name (with position flipped)
             // this gives about 5% performance penalty over checking b.pos() < b.mpos(), but allows us
             // to support more files.
-            if !map.contains_key(&name) {
-                assert!(!map.contains_key(&name));
-                map.insert(name, b);
-            } else if let Some(a) = map.remove(&name) {
-                if a.mapq() < min_mapping_quality {
-                    return;
+            match map.entry(name) {
+                std::collections::hash_map::Entry::Vacant(e) => {
+                    e.insert(b);
                 }
-                if b.mapq() < min_mapping_quality {
-                    return;
+                std::collections::hash_map::Entry::Occupied(e) => {
+                    let a = e.remove();
+
+                    if a.mapq() < min_mapping_quality {
+                        return;
+                    }
+                    if b.mapq() < min_mapping_quality {
+                        return;
+                    }
+                    // we know a is before b, but we don't know if they overlap.
+                    if a.cigar().end_pos() < b.pos() {
+                        return;
+                    }
+                    let tid = a.tid() as usize;
+                    counts.increment(
+                        a,
+                        b,
+                        min_base_qual,
+                        min_mapping_quality,
+                        bin_size,
+                        &fasta,
+                        &chroms[tid],
+                        &include_tree,
+                        &exclude_tree,
+                    );
                 }
-                // we know a is before b, but we don't know if they overlap.
-                if a.cigar().end_pos() < b.pos() {
-                    return;
-                }
-                let tid = a.tid() as usize;
-                counts.increment(
-                    a,
-                    b,
-                    min_base_qual,
-                    min_mapping_quality,
-                    bin_size,
-                    &fasta,
-                    &chroms[tid],
-                    &include_tree,
-                    &exclude_tree,
-                );
-            } else {
-                log::warn!("not found: {:?}{:?}", name, b.pos());
             }
         });
     log::info!(
