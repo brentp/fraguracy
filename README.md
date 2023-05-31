@@ -2,7 +2,9 @@
 # static binary build
 RUSTFLAGS="-C target-feature=+crt-static" cargo build --release  --target x86_64-unknown-linux-gnu
 --->
-# Fraguracy
+# Fraguracy 
+
+[![Rust](https://github.com/brentp/fraguracy/actions/workflows/rust.yml/badge.svg)](https://github.com/brentp/fraguracy/actions/workflows/rust.yml)
 
 `fraguracy` calculates real error rates using overlapping paired-end reads in a fragment.
 It reports a file of error positions and counts, along with a summary of errors by context, read-position, read-orientation (F or R) and base-quality.
