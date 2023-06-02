@@ -72,7 +72,7 @@ impl IntervalHeap {
                 // loop to skip '#' comment lines
                 let mut buf = String::new();
                 let line = fh.read_line(&mut buf);
-                if line.is_ok() && buf.starts_with('#') {
+                if line.is_ok() && !buf.starts_with('#') {
                     let r = parse_bed_line(&buf, file_i as u32, &(ih.chom_to_tid));
                     ih.h.push(Reverse(
                         r.expect(&format!("Error parsing first line from file: '{buf}'")),
@@ -192,7 +192,12 @@ pub(crate) fn combine_errors_main(
         writeln!(
             w,
             "{}\t{}\t{}\t{}\t{}\t{}",
-            ivs[0].chrom, ivs[0].start, ivs[0].end, ivs[0].group, count, n
+            ivs[0].chrom,
+            ivs[0].start,
+            ivs[0].end,
+            fraguracy::Q_LOOKUP[ivs[0].group as usize],
+            count,
+            n
         )?;
     }
     log::info!("wrote {}", output_path);
