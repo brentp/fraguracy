@@ -22,9 +22,9 @@ def main(vcf_file: str, *, prefix: str = "error-counts"):
             continue
 
         error_samples = variant.INFO.get('dn').split(',')
-        frag_count = variant.INFO.get('fraguracy_count')
+        frag_count = variant.INFO.get('fraguracy_count', 0)
         lcr = bool(variant.INFO.get('lcr', 0))
-        #frag_count = variant.INFO.get('fraguracy_samples')
+        #frag_count = variant.INFO.get('fraguracy_samples', 0)
         snp = 'snp' if variant.is_snp else 'indel'
         for s in error_samples:
             d[snp][s][frag_count] += 1
