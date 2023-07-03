@@ -1,6 +1,6 @@
 use bpci::*;
 use ndarray::prelude::Array;
-use ndarray::{Array1, Array5};
+use ndarray::Array5;
 use rust_htslib::bam::{
     record::{Cigar, CigarStringView},
     IndexedReader, Read, Record,
@@ -518,6 +518,12 @@ pub struct Coordinates {
     pub stop: u32,
 }
 
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct QualCoord {
+    pub coord: Coordinates,
+    pub qual: u8,
+}
+
 #[inline(always)]
 fn is_insertion(a: Cigar) -> bool {
     matches!(a, Cigar::Ins(_))
@@ -546,52 +552,71 @@ fn indel_coords(
     cig: &CigarStringView,
     genomic_min: u32,
     genomic_max: u32,
-    a_qual: &[u8],
-    b_qual: &[u8],
-) -> Vec<Coordinates> {
-    let mut result: Vec<Coordinates> = Vec::new();
+    base_quals: &[u8],
+) -> Vec<QualCoord> {
+    let mut result: Vec<QualCoord> = Vec::new();
     let mut start: u32 = cig.pos() as u32;
+    let mut read_i = 0;
+
     for c in cig {
         if start > genomic_max {
             break;
         }
         if start + (reference(*c) as u32) < genomic_min {
             start = start + reference(*c) as u32;
+            read_i += query(*c) as usize;
             continue;
         }
         match c {
             Cigar::Ins(_) => {
-                result.push(Coordinates {
-                    start,
-                    stop: start + 1,
+                result.push(QualCoord {
+                    coord: Coordinates {
+                        start,
+                        stop: start + 1,
+                    },
+                    qual: base_quals[read_i],
                 });
             }
             Cigar::Del(d) => {
-                result.push(Coordinates {
-                    start,
-                    stop: start + *d as u32,
+                result.push(QualCoord {
+                    coord: Coordinates {
+                        start,
+                        stop: start + *d as u32,
+                    },
+                    qual: base_quals[read_i],
                 });
             }
             _ => {}
         }
-        start = start + reference(*c) as u32;
+        start += reference(*c) as u32;
+        read_i += query(*c) as usize;
     }
     result
 }
 
 fn find_non_exact(
-    a_indel_coords: &Vec<Coordinates>,
-    b_indel_coords: &Vec<Coordinates>,
+    a_indel_coords: &Vec<QualCoord>,
+    b_indel_coords: &Vec<QualCoord>,
     result: &mut Vec<Coordinates>,
+    min_base_qual: u8,
 ) {
     for a in a_indel_coords {
-        match b_indel_coords.binary_search_by(|b| b.cmp(&a)) {
+        if a.qual <= min_base_qual {
+            continue;
+        }
+        match b_indel_coords.binary_search_by(|b| b.coord.cmp(&a.coord)) {
             Ok(_) => {}
-            Err(_) => {
+            Err(bi) => {
+                // we check base-qual (first base) of b as well.
+                // this is a bit weird, but ensures that at least both
+                // reads were confident at this site.
+                if bi < b_indel_coords.len() && &b_indel_coords[bi].qual < &min_base_qual {
+                    continue;
+                }
                 // any non-exact matches are errors
                 result.push(Coordinates {
-                    start: a.start,
-                    stop: a.stop,
+                    start: a.coord.start,
+                    stop: a.coord.stop,
                 });
             }
         }
@@ -604,6 +629,7 @@ fn indel_error_pieces(
     b: &CigarStringView,
     a_qual: &[u8],
     b_qual: &[u8],
+    min_base_qual: u8,
 ) -> Vec<Coordinates> {
     let aend = a.end_pos() as u32;
     let bend = b.end_pos() as u32;
@@ -612,15 +638,15 @@ fn indel_error_pieces(
     if aend <= b.pos() as u32 || bend <= a.pos() as u32 {
         return vec![];
     }
-    let a_indel_coords = indel_coords(a, b.pos() as u32, bend, a_qual, b_qual);
-    let a_indel_coords = indel_coords(a, b.pos() as u32, bend, b_qual, a_qual);
+    let a_indel_coords = indel_coords(a, b.pos() as u32, bend, a_qual);
+    let b_indel_coords = indel_coords(b, a.pos() as u32, aend, b_qual);
     if a_indel_coords.is_empty() && b_indel_coords.is_empty() {
         return vec![];
     }
 
     let mut result: Vec<Coordinates> = Vec::new();
-    find_non_exact(&a_indel_coords, &b_indel_coords, &mut result);
-    find_non_exact(&b_indel_coords, &a_indel_coords, &mut result);
+    find_non_exact(&a_indel_coords, &b_indel_coords, &mut result, min_base_qual);
+    find_non_exact(&b_indel_coords, &a_indel_coords, &mut result, min_base_qual);
     result
 }
 
@@ -873,7 +899,12 @@ mod tests {
                 stop: 23,
             },
         ];
-        assert_eq!(indel_error_pieces(&cigar_a, &cigar_b), expected);
+        let a_bqs = vec![30u8; 20];
+        let b_bqs = vec![30u8; 20];
+        assert_eq!(
+            indel_error_pieces(&cigar_a, &cigar_b, &a_bqs, &b_bqs, 15),
+            expected
+        );
     }
 
     #[test]
@@ -892,6 +923,26 @@ mod tests {
                 stop: 21,
             },
         ];
-        assert_eq!(indel_error_pieces(&cigar_a, &cigar_b), expected);
+        let a_bqs = vec![30u8; 20];
+        let b_bqs = vec![30u8; 20];
+        assert_eq!(
+            indel_error_pieces(&cigar_a, &cigar_b, &a_bqs, &b_bqs, 10),
+            expected
+        );
+    }
+
+    #[test]
+    fn test_indel_error_quals() {
+        let cigar_a =
+            CigarString(vec![Cigar::Match(10), Cigar::Del(3), Cigar::Match(5)]).into_view(10);
+        let cigar_b =
+            CigarString(vec![Cigar::Match(10), Cigar::Ins(3), Cigar::Match(5)]).into_view(10);
+        let expected = vec![];
+        let a_bqs = vec![10u8; 20];
+        let b_bqs = vec![10u8; 20];
+        assert_eq!(
+            indel_error_pieces(&cigar_a, &cigar_b, &a_bqs, &b_bqs, 60),
+            expected
+        );
     }
 }
