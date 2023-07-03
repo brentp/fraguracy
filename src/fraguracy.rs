@@ -274,6 +274,19 @@ impl Counts {
                     }
                 }
 
+                let indel_errors =
+                    indel_error_pieces(&a.cigar(), &b.cigar(), a.qual(), b.qual(), min_base_qual);
+                indel_errors.iter().for_each(|c: &Coordinates| {
+                    for p in c.start..c.stop {
+                        let p = Position {
+                            tid: a.tid() as u16,
+                            pos: p,
+                            bq_bin: 1,
+                        };
+                        self.counts.indel_error_positions.entry(p).or_insert(0);
+                    }
+                });
+
                 let aq = Counts::qual_to_bin(aq);
                 let bq = Counts::qual_to_bin(bq);
 
@@ -396,7 +409,6 @@ impl Counts {
                     self.counts.cnts[b_index] += 1;
 
                     self.counts.errs[err_index] += 1;
-                    // TODO: brent check these make sense, run in debug mode
 
                     log::debug!(
                         "gpos: {}, mm: {}, err:{}->{}, err-index:{:?}, ai: {}, bi: {}, {:?} (check) round-trip-base: {} (was {},{}) {:?}",

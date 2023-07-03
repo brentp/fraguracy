@@ -88,17 +88,31 @@ fn parse_bed_line(
     file_i: u32,
     chrom_to_tid: &HashMap<String, i32>,
 ) -> Result<Interval, Box<dyn Error>> {
-    let toks: Vec<&str> = line.split('\t').collect();
-    let mut iv = Interval {
-        tid: 0,
-        chrom: String::from(toks[0]),
-        start: str::parse::<u32>(toks[1])?,
-        end: str::parse::<u32>(toks[2])?,
-        group: (*fraguracy::REVERSE_Q_LOOKUP
-            .get(toks[3].trim())
-            .unwrap_or_else(|| panic!("unknown bq bin: {}", toks[3]))),
-        count: str::parse::<u32>(toks[4].trim())?,
-        file_i,
+    let toks: Vec<&str> = line.trim().split('\t').collect();
+    let mut iv = if toks.len() == 5 {
+        Interval {
+            tid: 0,
+            chrom: String::from(toks[0]),
+            start: str::parse::<u32>(toks[1])?,
+            end: str::parse::<u32>(toks[2])?,
+            group: (*fraguracy::REVERSE_Q_LOOKUP
+                .get(toks[3].trim())
+                .unwrap_or_else(|| panic!("unknown bq bin: {}", toks[3]))),
+            count: str::parse::<u32>(toks[4])?,
+            file_i,
+        }
+    } else if toks.len() == 4 {
+        Interval {
+            tid: 0,
+            chrom: String::from(toks[0]),
+            start: str::parse::<u32>(toks[1])?,
+            end: str::parse::<u32>(toks[2])?,
+            group: u8::MAX,
+            count: str::parse::<u32>(toks[3])?,
+            file_i,
+        }
+    } else {
+        panic!("expecting either 4 or 5 columns in bed file")
     };
     iv.tid = chrom_to_tid[&iv.chrom];
     Ok(iv)
@@ -195,7 +209,11 @@ pub(crate) fn combine_errors_main(
             ivs[0].chrom,
             ivs[0].start,
             ivs[0].end,
-            fraguracy::Q_LOOKUP[ivs[0].group as usize],
+            if ivs[0].group == u8::MAX {
+                "NA"
+            } else {
+                fraguracy::Q_LOOKUP[ivs[0].group as usize]
+            },
             count,
             n
         )?;

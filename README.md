@@ -41,7 +41,12 @@ chr1	241850751	241850752	37-59	2
 chr1	241850752	241850753	20-36	2	
 ```
 
-The errors file is useful to find **positions that are frequent errors** -- having count > 1 or with multiple bq_bins showing the same position.
+There is also an `$sample-indel-errors.bed` file that contains the columns:
+```
+chrom   start   stop    count
+```
+
+The errors files are useful to find **positions that are frequent errors** -- having count > 1 or with multiple bq_bins showing the same position.
 
 If multiple samples are given (multiple bam files) then each sample is processed in parallel and $prefix-total-counts.txt and $prefix-total-errors.bed will
 be created which sum all values for all samples.
