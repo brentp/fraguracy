@@ -78,7 +78,7 @@ impl fmt::Display for Stat {
         let (lo, hi) = self.confidence_interval(&self.ci);
         write!(
             f,
-            "{}\t{}\t{}\t{}{}\t{}\t{}\t{}\t{:e}\t{:e}",
+            "{}\t{}\t{}\t{}\t{}{}\t{}\t{}\t{:e}\t{:e}",
             ["r1", "r2"][self.read12 as usize],
             ["f", "r"][self.fr as usize],
             Q_LOOKUP[self.bq_bin as usize],
@@ -110,7 +110,7 @@ impl fmt::Display for ConfidenceInterval {
 
 impl Stat {
     pub(crate) fn header() -> String {
-        String::from("read12\tFR\tbq_bin\tread_pos\tcontext\ttotal_count\tindel_error_count\terror_count\terr_rate_lo\terr_rate_hi")
+        String::from("read12\tFR\tbq_bin\tread_pos\tcontext\ttotal_count\terror_count\terr_rate_lo\terr_rate_hi")
     }
 
     pub(crate) fn confidence_interval(&self, ci: &ConfidenceInterval) -> (f64, f64) {
