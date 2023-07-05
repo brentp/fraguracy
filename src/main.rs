@@ -32,8 +32,7 @@ use std::str;
 
 #[derive(Debug, Parser)]
 #[command(name = "fraguracy")]
-#[command(about = "read accuracy from fragment overlaps")]
-
+#[command(version)]
 // see: https://docs.rs/clap/latest/clap/_cookbook/git_derive/index.html
 struct Cli {
     #[command(subcommand)]
