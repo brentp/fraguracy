@@ -9,6 +9,7 @@ use rust_htslib::faidx;
 use rust_lapper::Lapper;
 use std::collections::HashMap;
 use std::fmt;
+use std::hash::Hash;
 use std::rc::Rc;
 use std::str;
 
@@ -26,14 +27,17 @@ pub(crate) struct Counts {
 }
 
 pub(crate) struct InnerCounts {
+    // genome_pos
     pub(crate) errs: Array5<u64>,
-    //  read, f/r pos, bq, bp, ctx{2} */
+    //  read, f/r, pos, bq, ctx{2} */
     pub(crate) cnts: Array5<u64>,
     pub(crate) mismatches: u64,
     pub(crate) matches: u64,
 
     // position -> error count. nice to find sites that are error-prone.
     pub(crate) error_positions: HashMap<Position, u32>,
+    // position -> indel error counts
+    pub(crate) indel_error_positions: HashMap<Position, u32>,
 }
 
 fn argmax<T: Ord>(slice: &[T]) -> Option<usize> {
@@ -49,6 +53,9 @@ impl std::ops::AddAssign<InnerCounts> for InnerCounts {
 
         for (pos, cnt) in o.error_positions.into_iter() {
             *(self.error_positions.entry(pos)).or_insert(0) += cnt;
+        }
+        for (pos, cnt) in o.indel_error_positions.into_iter() {
+            *(self.indel_error_positions.entry(pos)).or_insert(0) += cnt;
         }
     }
 }
@@ -173,6 +180,7 @@ impl InnerCounts {
             mismatches: 0,
             matches: 0,
             error_positions: HashMap::new(),
+            indel_error_positions: HashMap::new(),
         }
     }
 }
@@ -219,7 +227,7 @@ impl Counts {
         include_tree: &Option<&Lapper<u32, u32>>,
         exclude_tree: &Option<&Lapper<u32, u32>>,
     ) {
-        let pieces = overlap_pieces(a.cigar(), b.cigar(), false);
+        let pieces = overlap_pieces(&a.cigar(), &b.cigar(), false);
         if pieces.is_empty() {
             return;
         }
@@ -266,6 +274,19 @@ impl Counts {
                     }
                 }
 
+                let indel_errors =
+                    indel_error_pieces(&a.cigar(), &b.cigar(), a.qual(), b.qual(), min_base_qual);
+                indel_errors.iter().for_each(|c: &Coordinates| {
+                    for p in c.start..c.stop {
+                        let p = Position {
+                            tid: a.tid() as u16,
+                            pos: p,
+                            bq_bin: 1,
+                        };
+                        *self.counts.indel_error_positions.entry(p).or_insert(0) += 1;
+                    }
+                });
+
                 let aq = Counts::qual_to_bin(aq);
                 let bq = Counts::qual_to_bin(bq);
 
@@ -275,7 +296,7 @@ impl Counts {
                 let a_bin = (ai / bin_size) as usize;
                 let b_bin = (bi / bin_size) as usize;
 
-                /*                         read1/2, F/R, pos, mq, bq, ctx */
+                /* read1/2, F/R, pos, mq, bq, ctx */
                 let mut a_index = [
                     1 - a.is_first_in_template() as usize, // 0 r1
                     (a.is_reverse() as usize),             //
@@ -388,7 +409,6 @@ impl Counts {
                     self.counts.cnts[b_index] += 1;
 
                     self.counts.errs[err_index] += 1;
-                    // TODO: brent check these make sense, run in debug mode
 
                     log::debug!(
                         "gpos: {}, mm: {}, err:{}->{}, err-index:{:?}, ai: {}, bi: {}, {:?} (check) round-trip-base: {} (was {},{}) {:?}",
@@ -510,6 +530,12 @@ pub struct Coordinates {
     pub stop: u32,
 }
 
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct QualCoord {
+    pub coord: Coordinates,
+    pub qual: u8,
+}
+
 #[inline(always)]
 fn is_insertion(a: Cigar) -> bool {
     matches!(a, Cigar::Ins(_))
@@ -534,11 +560,113 @@ fn reference(a: Cigar) -> i64 {
     }
 }
 
+fn indel_coords(
+    cig: &CigarStringView,
+    genomic_min: u32,
+    genomic_max: u32,
+    base_quals: &[u8],
+) -> Vec<QualCoord> {
+    let mut result: Vec<QualCoord> = Vec::new();
+    let mut start: u32 = cig.pos() as u32;
+    let mut read_i = 0;
+
+    for c in cig {
+        if start > genomic_max {
+            break;
+        }
+        if start + (reference(*c) as u32) < genomic_min {
+            start += reference(*c) as u32;
+            read_i += query(*c) as usize;
+            continue;
+        }
+        match c {
+            Cigar::Ins(_) => {
+                result.push(QualCoord {
+                    coord: Coordinates {
+                        start,
+                        stop: start + 1,
+                    },
+                    qual: base_quals[read_i],
+                });
+            }
+            Cigar::Del(d) => {
+                result.push(QualCoord {
+                    coord: Coordinates {
+                        start,
+                        stop: start + *d,
+                    },
+                    qual: base_quals[read_i],
+                });
+            }
+            _ => {}
+        }
+        start += reference(*c) as u32;
+        read_i += query(*c) as usize;
+    }
+    result
+}
+
+fn find_non_exact(
+    a_indel_coords: &Vec<QualCoord>,
+    b_indel_coords: &Vec<QualCoord>,
+    result: &mut Vec<Coordinates>,
+    min_base_qual: u8,
+) {
+    for a in a_indel_coords {
+        if a.qual <= min_base_qual {
+            continue;
+        }
+        match b_indel_coords.binary_search_by(|b| b.coord.cmp(&a.coord)) {
+            Ok(_) => {}
+            Err(bi) => {
+                // we check base-qual (first base) of b as well.
+                // this is a bit weird, but ensures that at least both
+                // reads were confident at this site.
+                if bi < b_indel_coords.len() && b_indel_coords[bi].qual < min_base_qual {
+                    continue;
+                }
+                // any non-exact matches are errors
+                result.push(Coordinates {
+                    start: a.coord.start,
+                    stop: a.coord.stop,
+                });
+            }
+        }
+    }
+}
+
+/// Report genomic coordiantes of bases that do not match between the reads.
+fn indel_error_pieces(
+    a: &CigarStringView,
+    b: &CigarStringView,
+    a_qual: &[u8],
+    b_qual: &[u8],
+    min_base_qual: u8,
+) -> Vec<Coordinates> {
+    let aend = a.end_pos() as u32;
+    let bend = b.end_pos() as u32;
+    //let astart = a.pos() + a.leading_softclips();
+    //let bstart = b.pos() + b.leading_softclips();
+    if aend <= b.pos() as u32 || bend <= a.pos() as u32 {
+        return vec![];
+    }
+    let a_indel_coords = indel_coords(a, b.pos() as u32, bend, a_qual);
+    let b_indel_coords = indel_coords(b, a.pos() as u32, aend, b_qual);
+    if a_indel_coords.is_empty() && b_indel_coords.is_empty() {
+        return vec![];
+    }
+
+    let mut result: Vec<Coordinates> = Vec::new();
+    find_non_exact(&a_indel_coords, &b_indel_coords, &mut result, min_base_qual);
+    find_non_exact(&b_indel_coords, &a_indel_coords, &mut result, min_base_qual);
+    result
+}
+
 /// Return mapped parts of each read that overlap the other.
 /// Returns A, B, genome coordiantes.
 fn overlap_pieces(
-    a: CigarStringView,
-    b: CigarStringView,
+    a: &CigarStringView,
+    b: &CigarStringView,
     skip_insertions: bool,
 ) -> Vec<[Coordinates; 3]> {
     let aend = a.end_pos();
@@ -639,7 +767,7 @@ mod tests {
     fn test_different_alignments() {
         let a = CigarString(vec![Cigar::Match(5), Cigar::Ins(3), Cigar::Match(5)]).into_view(0);
         let b = CigarString(vec![Cigar::Match(13)]).into_view(0);
-        let r = overlap_pieces(a, b, false);
+        let r = overlap_pieces(&a, &b, false);
         dbg!(&r);
     }
 
@@ -647,7 +775,7 @@ mod tests {
     fn test_same_insertion() {
         let a = CigarString(vec![Cigar::Match(10), Cigar::Ins(8), Cigar::Match(10)]).into_view(8);
         let b = CigarString(vec![Cigar::Match(10), Cigar::Ins(8), Cigar::Match(10)]).into_view(5);
-        let r = overlap_pieces(a, b, false);
+        let r = overlap_pieces(&a, &b, false);
         dbg!(&r);
     }
 
@@ -661,7 +789,7 @@ mod tests {
             Cigar::Match(13),
         ])
         .into_view(0);
-        let r = overlap_pieces(a, b, true);
+        let r = overlap_pieces(&a, &b, true);
         let expected = [
             [
                 Coordinates { start: 0, stop: 11 },
@@ -721,7 +849,7 @@ mod tests {
         ])
         .into_view(5);
 
-        let r = overlap_pieces(a, b, true);
+        let r = overlap_pieces(&a, &b, true);
 
         let expected = [
             [
@@ -765,5 +893,68 @@ mod tests {
     #[test]
     fn test_size() {
         assert_eq!(std::mem::size_of::<Position>(), 8);
+    }
+
+    #[test]
+    fn test_indel_error_pieces() {
+        let cigar_a =
+            CigarString(vec![Cigar::Match(10), Cigar::Del(2), Cigar::Match(5)]).into_view(5);
+        let cigar_b =
+            CigarString(vec![Cigar::Match(10), Cigar::Del(3), Cigar::Match(4)]).into_view(10);
+        let expected = vec![
+            Coordinates {
+                start: 15,
+                stop: 17,
+            },
+            Coordinates {
+                start: 20,
+                stop: 23,
+            },
+        ];
+        let a_bqs = vec![30u8; 20];
+        let b_bqs = vec![30u8; 20];
+        assert_eq!(
+            indel_error_pieces(&cigar_a, &cigar_b, &a_bqs, &b_bqs, 15),
+            expected
+        );
+    }
+
+    #[test]
+    fn test_indel_error_pieces_overlap() {
+        let cigar_a =
+            CigarString(vec![Cigar::Match(10), Cigar::Del(3), Cigar::Match(5)]).into_view(10);
+        let cigar_b =
+            CigarString(vec![Cigar::Match(10), Cigar::Ins(3), Cigar::Match(5)]).into_view(10);
+        let expected = vec![
+            Coordinates {
+                start: 20,
+                stop: 23,
+            },
+            Coordinates {
+                start: 20,
+                stop: 21,
+            },
+        ];
+        let a_bqs = vec![30u8; 20];
+        let b_bqs = vec![30u8; 20];
+        assert_eq!(
+            indel_error_pieces(&cigar_a, &cigar_b, &a_bqs, &b_bqs, 10),
+            expected
+        );
+    }
+
+    #[test]
+    fn test_indel_error_quals() {
+        let cigar_a =
+            CigarString(vec![Cigar::Match(10), Cigar::Del(3), Cigar::Match(5)]).into_view(10);
+        let cigar_b =
+            CigarString(vec![Cigar::Match(10), Cigar::Ins(3), Cigar::Match(5)]).into_view(10);
+        let expected = vec![];
+        let a_bqs = vec![10u8; 20];
+        let b_bqs = vec![10u8; 20];
+        assert_eq!(
+            indel_error_pieces(&cigar_a, &cigar_b, &a_bqs, &b_bqs, 60),
+            expected
+        );
     }
 }

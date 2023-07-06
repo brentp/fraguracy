@@ -46,6 +46,26 @@ pub(crate) fn write_errors(counts: &InnerCounts, output_prefix: PathBuf, chroms:
         writeln!(errfh, "{chrom}\t{position}\t{end}\t{bqs}\t{cnt}")
             .expect("error writing to error file");
     }
+    write_indel_errors(counts, output_prefix, chroms);
+}
+fn write_indel_errors(counts: &InnerCounts, output_prefix: PathBuf, chroms: Vec<String>) {
+    let mut errfh = std::fs::File::create(
+        output_prefix
+            .to_str()
+            .expect("error getting output prefix")
+            .to_owned()
+            + "indel-errors.bed",
+    )
+    .expect("error opening indel file!");
+    writeln!(errfh, "#chrom\tstart\tend\tcount").expect("error writing to file");
+    for pos in counts.indel_error_positions.keys().sorted() {
+        let cnt = counts.indel_error_positions[pos];
+        let chrom = &chroms[pos.tid as usize];
+        let position = pos.pos;
+        let end = position + 1;
+        writeln!(errfh, "{chrom}\t{position}\t{end}\t{cnt}")
+            .expect("error writing to indel-error file");
+    }
 }
 
 use flate2::read::GzDecoder;
