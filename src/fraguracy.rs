@@ -575,7 +575,7 @@ fn indel_coords(
             break;
         }
         if start + (reference(*c) as u32) < genomic_min {
-            start = start + reference(*c) as u32;
+            start += reference(*c) as u32;
             read_i += query(*c) as usize;
             continue;
         }
@@ -593,7 +593,7 @@ fn indel_coords(
                 result.push(QualCoord {
                     coord: Coordinates {
                         start,
-                        stop: start + *d as u32,
+                        stop: start + *d,
                     },
                     qual: base_quals[read_i],
                 });
@@ -622,7 +622,7 @@ fn find_non_exact(
                 // we check base-qual (first base) of b as well.
                 // this is a bit weird, but ensures that at least both
                 // reads were confident at this site.
-                if bi < b_indel_coords.len() && &b_indel_coords[bi].qual < &min_base_qual {
+                if bi < b_indel_coords.len() && b_indel_coords[bi].qual < min_base_qual {
                     continue;
                 }
                 // any non-exact matches are errors
