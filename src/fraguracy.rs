@@ -283,7 +283,7 @@ impl Counts {
                             pos: p,
                             bq_bin: 1,
                         };
-                        self.counts.indel_error_positions.entry(p).or_insert(0);
+                        *self.counts.indel_error_positions.entry(p).or_insert(0) += 1;
                     }
                 });
 

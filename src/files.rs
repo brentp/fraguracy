@@ -59,11 +59,12 @@ fn write_indel_errors(counts: &InnerCounts, output_prefix: PathBuf, chroms: Vec<
     .expect("error opening indel file!");
     writeln!(errfh, "#chrom\tstart\tend\tcount").expect("error writing to file");
     for pos in counts.indel_error_positions.keys().sorted() {
-        let cnt = counts.error_positions[pos];
+        let cnt = counts.indel_error_positions[pos];
         let chrom = &chroms[pos.tid as usize];
         let position = pos.pos;
         let end = position + 1;
-        writeln!(errfh, "{chrom}\t{position}\t{end}\t{cnt}").expect("error writing to error file");
+        writeln!(errfh, "{chrom}\t{position}\t{end}\t{cnt}")
+            .expect("error writing to indel-error file");
     }
 }
 
