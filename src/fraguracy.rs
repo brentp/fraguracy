@@ -35,7 +35,7 @@ pub(crate) struct InnerCounts {
     pub(crate) matches: u64,
 
     // position -> error count. nice to find sites that are error-prone.
-    pub(crate) error_positions: HashMap<Position, u32>,
+    pub(crate) error_positions: HashMap<Position, [u32; 6]>,
     // position -> indel error counts
     pub(crate) indel_error_positions: HashMap<Position, u32>,
 }
@@ -52,7 +52,10 @@ impl std::ops::AddAssign<InnerCounts> for InnerCounts {
         self.matches += o.matches;
 
         for (pos, cnt) in o.error_positions.into_iter() {
-            *(self.error_positions.entry(pos)).or_insert(0) += cnt;
+            let entry = self.error_positions.entry(pos).or_insert([0; 6]);
+            for i in 0..6 {
+                entry[i] += cnt[i];
+            }
         }
         for (pos, cnt) in o.indel_error_positions.into_iter() {
             *(self.indel_error_positions.entry(pos)).or_insert(0) += cnt;
@@ -364,7 +367,10 @@ impl Counts {
                             // we don't know the bq, but assume it's the min. this very rarely happens so doesn't affect results.
                             bq_bin: aq.min(bq),
                         };
-                        *self.counts.error_positions.entry(pos).or_insert(0) += 1;
+                        let context_idx = a_index[4];
+                        let context_counts =
+                            self.counts.error_positions.entry(pos).or_insert([0; 6]);
+                        context_counts[context_idx] += 1;
                         continue;
                     }
 
@@ -392,7 +398,10 @@ impl Counts {
                             // we don't know the bq, but assume it's the min. this very rarely happens so doesn't affect results.
                             bq_bin: aq.min(bq),
                         };
-                        *self.counts.error_positions.entry(pos).or_insert(0) += 1;
+                        let context_idx = a_index[4];
+                        let context_counts =
+                            self.counts.error_positions.entry(pos).or_insert([0; 6]);
+                        context_counts[context_idx] += 1;
                         continue;
                     };
 
@@ -401,8 +410,9 @@ impl Counts {
                         pos: genome_pos,
                         bq_bin: err_index[3] as u8,
                     };
-
-                    *self.counts.error_positions.entry(pos).or_insert(0) += 1;
+                    let context_idx = err_index[4];
+                    let context_counts = self.counts.error_positions.entry(pos).or_insert([0; 6]);
+                    context_counts[context_idx] += 1;
 
                     let bases = CONTEXT_TO_CONTEXT2[err_index[4]];
                     self.counts.cnts[a_index] += 1;

@@ -1,6 +1,6 @@
 [package]
 name = "fraguracy"
-version = "0.1.9"
+version = "0.2.0"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -8,7 +8,6 @@ edition = "2021"
 [dependencies]
 rust-htslib = { git = "https://github.com/rust-bio/rust-htslib", rev = "6b1551829d98445fab6f89da06c0f86d38f379ce", features = ["libdeflate", "static", "gcs", "s3"] }
 libc = "*"
-clap = {version = "4.1.6", features = ["derive"]}
 rustc-hash = "1.1.0"
 lazy_static = "1.4.0"
 ndarray = "0.15.6"
@@ -20,6 +19,7 @@ linear-map = "1.2.0"
 rust-lapper = "1.1.0"
 flate2 = "1.0.25"
 bpci = "0.1.0"
+clap = {version ="4.5.20", features=["derive"]}
 #plotly = "0.8.3"
 #polars = { version = "0.27.2", features = ["lazy", "strings"] }
 

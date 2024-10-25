@@ -18,7 +18,7 @@ struct Interval {
     start: u32,
     end: u32,
     group: u8,
-    count: u32,
+    count: [u32; 6],
     file_i: u32,
 }
 struct IntervalHeap {
@@ -89,8 +89,9 @@ fn parse_bed_line(
     chrom_to_tid: &HashMap<String, i32>,
 ) -> Result<Interval, Box<dyn Error>> {
     let toks: Vec<&str> = line.trim().split('\t').collect();
-    let mut iv = if toks.len() == 5 {
-        Interval {
+    // can be 6 if combine-errors was already run once.
+    let mut iv = if toks.len() == 5 || toks.len() == 6 {
+        let mut iv = Interval {
             tid: 0,
             chrom: String::from(toks[0]),
             start: str::parse::<u32>(toks[1])?,
@@ -98,21 +99,43 @@ fn parse_bed_line(
             group: (*fraguracy::REVERSE_Q_LOOKUP
                 .get(toks[3].trim())
                 .unwrap_or_else(|| panic!("unknown bq bin: {}", toks[3]))),
-            count: str::parse::<u32>(toks[4])?,
+            count: [0; 6],
             file_i,
+        };
+        // toks[4] is the total count, which we don't need. because we can sum the count from toks[5]
+        // parse the counts which appear as, e.g.,
+        // AC:1,AG:2,AT:3,CG:4,CT:5,GT:6
+        // and increment the appropriate index using CONTEXT_LOOKUP from fraguracy.rs
+        for s in toks[5].split(',') {
+            let (context, count) = s.split(':').collect_tuple().unwrap();
+            if context.len() != 2 {
+                return Err(
+                    format!("expecting two characters for context, found {}", context).into(),
+                );
+            }
+            let mut context = context.chars();
+            let a = context.next().unwrap();
+            let b = context.next().unwrap();
+            let idx = fraguracy::CONTEXT_LOOKUP[&(a as u8, b as u8)];
+            iv.count[idx] += count.parse::<u32>().unwrap();
         }
+        iv
     } else if toks.len() == 4 {
-        Interval {
+        // indel errors
+        let mut iv = Interval {
             tid: 0,
             chrom: String::from(toks[0]),
             start: str::parse::<u32>(toks[1])?,
             end: str::parse::<u32>(toks[2])?,
             group: u8::MAX,
-            count: str::parse::<u32>(toks[3])?,
+            count: [0; 6],
             file_i,
-        }
+        };
+        // store the count in the first position for indels.
+        iv.count[0] = str::parse::<u32>(toks[3])?;
+        iv
     } else {
-        panic!("expecting either 4 or 5 columns in bed file")
+        panic!("expecting 4 or 5 columns in bed file, found {}", toks.len());
     };
     iv.tid = chrom_to_tid[&iv.chrom];
     Ok(iv)
@@ -193,19 +216,23 @@ pub(crate) fn combine_errors_main(
     let ih = IntervalHeap::new(paths, fai_path);
     let f = File::create(&output_path)?;
     let mut w = BufWriter::new(f);
-    writeln!(w, "#chrom\tstart\tend\tbq_bin\tcount\tn_samples")?;
+    writeln!(w, "#chrom\tstart\tend\tbq_bin\tcount\tcontexts\tn_samples")?;
 
     for (_, ivs) in &ih
         .into_iter()
         .group_by(|iv| (iv.tid, iv.start, iv.end, iv.group))
     {
         let ivs: Vec<Interval> = ivs.into_iter().collect();
-        let n = ivs.iter().filter(|iv| iv.count > 0).count();
-        let count: u32 = ivs.iter().map(|iv| iv.count).sum();
+        let n = ivs
+            .iter()
+            .filter(|iv| iv.count.iter().any(|&c| c > 0))
+            .count();
+
+        let (total_count, context_str) = crate::files::format_context_counts(ivs[0].count);
 
         writeln!(
             w,
-            "{}\t{}\t{}\t{}\t{}\t{}",
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}",
             ivs[0].chrom,
             ivs[0].start,
             ivs[0].end,
@@ -214,7 +241,8 @@ pub(crate) fn combine_errors_main(
             } else {
                 fraguracy::Q_LOOKUP[ivs[0].group as usize]
             },
-            count,
+            total_count,
+            context_str,
             n
         )?;
     }

@@ -1,4 +1,4 @@
-use crate::fraguracy::{InnerCounts, Stat};
+use crate::fraguracy::{InnerCounts, Stat, CONTEXT_TO_CONTEXT2};
 use std::string::String;
 
 use itertools::Itertools;
@@ -25,6 +25,25 @@ pub(crate) fn write_stats(stats: Vec<Stat>, output_prefix: PathBuf) {
         .for_each(|s| writeln!(fh, "{s}").expect("error writing to file"));
 }
 
+pub(crate) fn format_context_counts(counts: [u32; 6]) -> (u32, String) {
+    let mut total: u32 = 0;
+    let contexts: String = counts
+        .iter()
+        .enumerate()
+        .filter(|(_, &count)| count > 0)
+        .map(|(idx, &count)| {
+            let context = CONTEXT_TO_CONTEXT2[idx];
+            let a = context[0];
+            let b = context[1];
+            total += count;
+            format!("{a}{b}:{count}")
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+
+    (total, contexts)
+}
+
 pub(crate) fn write_errors(counts: &InnerCounts, output_prefix: PathBuf, chroms: Vec<String>) {
     let mut errfh = std::fs::File::create(
         output_prefix
@@ -34,17 +53,21 @@ pub(crate) fn write_errors(counts: &InnerCounts, output_prefix: PathBuf, chroms:
             + "errors.bed",
     )
     .expect("error opening file!");
-    writeln!(errfh, "#chrom\tstart\tend\tbq_bin\tcount").expect("error writing to file");
+    writeln!(errfh, "#chrom\tstart\tend\tbq_bin\tcount\tcontexts").expect("error writing to file");
 
     for pos in counts.error_positions.keys().sorted() {
         //for (pos, cnt) in (&counts.error_positions).iter() {
         let cnt = counts.error_positions[pos];
+        let (total, contexts) = format_context_counts(cnt);
         let chrom = &chroms[pos.tid as usize];
         let position = pos.pos;
         let end = position + 1;
         let bqs = crate::fraguracy::Q_LOOKUP[pos.bq_bin as usize];
-        writeln!(errfh, "{chrom}\t{position}\t{end}\t{bqs}\t{cnt}")
-            .expect("error writing to error file");
+        writeln!(
+            errfh,
+            "{chrom}\t{position}\t{end}\t{bqs}\t{total}\t{contexts}"
+        )
+        .expect("error writing to error file");
     }
     write_indel_errors(counts, output_prefix, chroms);
 }
@@ -90,4 +113,36 @@ pub(crate) fn open_file(path: Option<PathBuf>) -> Option<Box<dyn BufRead>> {
         Box::new(buf_file)
     };
     Some(reader)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_format_context_counts() {
+        // Test case 1: All counts are non-zero
+        let counts1 = [1, 2, 3, 4, 5, 6];
+        let (total1, contexts1) = format_context_counts(counts1);
+        assert_eq!(total1, 21);
+        assert_eq!(contexts1, "AC:1,AG:2,AT:3,CA:4,CG:5,CT:6");
+
+        // Test case 2: Some counts are zero
+        let counts2 = [0, 2, 0, 4, 0, 6];
+        let (total2, contexts2) = format_context_counts(counts2);
+        assert_eq!(total2, 12);
+        assert_eq!(contexts2, "AG:2,CA:4,CT:6");
+
+        // Test case 3: All counts are zero
+        let counts3 = [0, 0, 0, 0, 0, 0];
+        let (total3, contexts3) = format_context_counts(counts3);
+        assert_eq!(total3, 0);
+        assert_eq!(contexts3, "");
+
+        // Test case 4: Only one non-zero count
+        let counts4 = [0, 0, 0, 0, 5, 0];
+        let (total4, contexts4) = format_context_counts(counts4);
+        assert_eq!(total4, 5);
+        assert_eq!(contexts4, "CG:5");
+    }
 }
