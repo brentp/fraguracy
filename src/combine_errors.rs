@@ -1,13 +1,14 @@
 use crate::fraguracy;
 use core::cmp::Reverse;
 use itertools::Itertools;
+use rust_htslib::bgzf;
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 use std::collections::HashMap;
 use std::error::Error;
 use std::fs::File;
 use std::io;
-use std::io::{BufRead, BufReader, BufWriter, Write};
+use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::string::String;
 
@@ -103,6 +104,7 @@ fn parse_bed_line(
             file_i,
         };
         // toks[4] is the total count, which we don't need. because we can sum the count from toks[5]
+
         // parse the counts which appear as, e.g.,
         // AC:1,AG:2,AT:3,CG:4,CT:5,GT:6
         // and increment the appropriate index using CONTEXT_LOOKUP from fraguracy.rs
@@ -214,9 +216,18 @@ pub(crate) fn combine_errors_main(
     output_path: String,
 ) -> io::Result<()> {
     let ih = IntervalHeap::new(paths, fai_path);
-    let f = File::create(&output_path)?;
-    let mut w = BufWriter::new(f);
-    writeln!(w, "#chrom\tstart\tend\tbq_bin\tcount\tcontexts\tn_samples")?;
+
+    // Append .gz if not already present
+    let output_path = if !output_path.ends_with(".gz") {
+        output_path + ".gz"
+    } else {
+        output_path
+    };
+
+    let mut writer =
+        bgzf::Writer::from_path(&output_path).expect("error creating bgzip output file");
+
+    writer.write_all(b"#chrom\tstart\tend\tbq_bin\tcount\tcontexts\tn_samples\n")?;
 
     for (_, ivs) in &ih
         .into_iter()
@@ -230,9 +241,8 @@ pub(crate) fn combine_errors_main(
 
         let (total_count, context_str) = crate::files::format_context_counts(ivs[0].count);
 
-        writeln!(
-            w,
-            "{}\t{}\t{}\t{}\t{}\t{}\t{}",
+        let line = format!(
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
             ivs[0].chrom,
             ivs[0].start,
             ivs[0].end,
@@ -244,8 +254,10 @@ pub(crate) fn combine_errors_main(
             total_count,
             context_str,
             n
-        )?;
+        );
+        writer.write_all(line.as_bytes())?;
     }
     log::info!("wrote {}", output_path);
-    w.flush()
+    writer.flush()?;
+    Ok(())
 }

@@ -1,10 +1,13 @@
 use crate::fraguracy::{InnerCounts, Stat, CONTEXT_TO_CONTEXT2};
 use std::string::String;
 
+use flate2::bufread::GzDecoder;
 use itertools::Itertools;
+use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 
+use rust_htslib::bgzf;
 use std::io::Write;
 
 pub(crate) fn write_stats(stats: Vec<Stat>, output_prefix: PathBuf) {
@@ -45,70 +48,82 @@ pub(crate) fn format_context_counts(counts: [u32; 6]) -> (u32, String) {
 }
 
 pub(crate) fn write_errors(counts: &InnerCounts, output_prefix: PathBuf, chroms: Vec<String>) {
-    let mut errfh = std::fs::File::create(
-        output_prefix
-            .to_str()
-            .expect("error getting output prefix")
-            .to_owned()
-            + "errors.bed",
-    )
-    .expect("error opening file!");
-    writeln!(errfh, "#chrom\tstart\tend\tbq_bin\tcount\tcontexts").expect("error writing to file");
+    let path = output_prefix
+        .to_str()
+        .expect("error getting output prefix")
+        .to_owned()
+        + "errors.bed.gz";
+
+    let mut errfh = bgzf::Writer::from_path(&path).expect("error opening bgzip file!");
+    errfh
+        .write_all(b"#chrom\tstart\tend\tbq_bin\tcount\tcontexts\n")
+        .expect("error writing header");
 
     for pos in counts.error_positions.keys().sorted() {
-        //for (pos, cnt) in (&counts.error_positions).iter() {
         let cnt = counts.error_positions[pos];
         let (total, contexts) = format_context_counts(cnt);
         let chrom = &chroms[pos.tid as usize];
         let position = pos.pos;
         let end = position + 1;
         let bqs = crate::fraguracy::Q_LOOKUP[pos.bq_bin as usize];
-        writeln!(
-            errfh,
-            "{chrom}\t{position}\t{end}\t{bqs}\t{total}\t{contexts}"
-        )
-        .expect("error writing to error file");
+        let line = format!("{chrom}\t{position}\t{end}\t{bqs}\t{total}\t{contexts}\n");
+        errfh
+            .write_all(line.as_bytes())
+            .expect("error writing to error file");
     }
     write_indel_errors(counts, output_prefix, chroms);
 }
+
 fn write_indel_errors(counts: &InnerCounts, output_prefix: PathBuf, chroms: Vec<String>) {
-    let mut errfh = std::fs::File::create(
-        output_prefix
-            .to_str()
-            .expect("error getting output prefix")
-            .to_owned()
-            + "indel-errors.bed",
-    )
-    .expect("error opening indel file!");
-    writeln!(errfh, "#chrom\tstart\tend\tcount").expect("error writing to file");
+    let path = output_prefix
+        .to_str()
+        .expect("error getting output prefix")
+        .to_owned()
+        + "indel-errors.bed.gz";
+
+    let mut errfh = bgzf::Writer::from_path(&path).expect("error opening bgzip file!");
+
+    errfh
+        .write_all(b"#chrom\tstart\tend\tcount\n")
+        .expect("error writing header");
+
     for pos in counts.indel_error_positions.keys().sorted() {
         let cnt = counts.indel_error_positions[pos];
         let chrom = &chroms[pos.tid as usize];
         let position = pos.pos;
         let end = position + 1;
-        writeln!(errfh, "{chrom}\t{position}\t{end}\t{cnt}")
+        let line = format!("{chrom}\t{position}\t{end}\t{cnt}\n");
+        errfh
+            .write_all(line.as_bytes())
             .expect("error writing to indel-error file");
     }
 }
 
-use flate2::read::GzDecoder;
-use std::fs::File;
-
-/// Open a file path that may be gzipped.
 pub(crate) fn open_file(path: Option<PathBuf>) -> Option<Box<dyn BufRead>> {
-    let file = File::open(path.unwrap());
+    let file = File::open(path.as_ref().unwrap());
     if file.is_err() {
         eprintln!("error opening file: {}", file.unwrap_err());
         return None;
     }
     let file = file.unwrap();
+
+    // Check if it's a bgzip file
     let mut buf_file = BufReader::new(file);
-
     let b = buf_file.fill_buf().expect("error reading from file");
-    let gzipped = &b[0..2] == b"\x1f\x8b";
 
-    let reader: Box<dyn BufRead> = if gzipped {
-        Box::new(BufReader::new(GzDecoder::new(buf_file)))
+    let reader: Box<dyn BufRead> = if b.starts_with(b"\x1f\x8b") {
+        if path.as_ref().unwrap().to_str().unwrap().ends_with(".gz") {
+            // Try opening as bgzip first
+            if let Ok(bgzf_reader) = bgzf::Reader::from_path(path.as_ref().unwrap()) {
+                let buf_reader = BufReader::new(bgzf_reader);
+                Box::new(buf_reader)
+            } else {
+                // Fall back to regular gzip
+                Box::new(BufReader::new(GzDecoder::new(buf_file)))
+            }
+        } else {
+            Box::new(BufReader::new(GzDecoder::new(buf_file)))
+        }
     } else {
         Box::new(buf_file)
     };
