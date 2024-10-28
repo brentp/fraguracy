@@ -617,8 +617,8 @@ fn indel_coords(
 }
 
 fn find_non_exact(
-    a_indel_coords: &Vec<QualCoord>,
-    b_indel_coords: &Vec<QualCoord>,
+    a_indel_coords: &[QualCoord],
+    b_indel_coords: &[QualCoord],
     result: &mut Vec<Coordinates>,
     min_base_qual: u8,
 ) {

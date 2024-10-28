@@ -76,7 +76,7 @@ impl IntervalHeap {
                 if line.is_ok() && !buf.starts_with('#') {
                     let r = parse_bed_line(&buf, file_i as u32, &(ih.chom_to_tid));
                     ih.h.push(Reverse(
-                        r.expect(&format!("Error parsing first line from file: '{buf}'")),
+                        r.unwrap_or_else(|_| panic!("Error parsing first line from file: '{buf}'")),
                     ));
                     break;
                 }
@@ -176,6 +176,7 @@ impl PartialEq for Interval {
 }
 
 impl PartialOrd for Interval {
+    #[allow(clippy::non_canonical_partial_ord_impl)]
     fn partial_cmp(&self, b: &Interval) -> Option<Ordering> {
         if self.tid != b.tid {
             return if self.tid < b.tid {
