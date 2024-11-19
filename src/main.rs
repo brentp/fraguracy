@@ -29,6 +29,7 @@ use rayon::prelude::*;
 use crate::fraguracy::Stat;
 
 use std::env;
+use std::io::Write;
 use std::str;
 
 #[derive(Debug, Parser)]
@@ -42,6 +43,7 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
+    /*
     #[command(
         arg_required_else_help = true,
         about = "calculate denominator for fraguracy using only overlapping bases and distance to homopolymers"
@@ -85,6 +87,7 @@ enum Commands {
         )]
         output_prefix: String,
     },
+    */
     #[command(
         arg_required_else_help = true,
         about = "combine error bed files from extract"
@@ -223,6 +226,7 @@ fn main() -> std::io::Result<()> {
     env_logger::init();
 
     match args.command {
+        /*
         Commands::Denominator {
             bam_path,
             min_homopolymer_length,
@@ -238,7 +242,7 @@ fn main() -> std::io::Result<()> {
             min_mapping_quality,
             output_prefix,
         ),
-
+        */
         Commands::Extract {
             bams,
             fasta,
@@ -332,6 +336,7 @@ fn process_bam(
     min_mapping_quality: u8,
     min_base_qual: u8,
     reference_as_truth: bool,
+    output_prefix: PathBuf,
 ) -> (fraguracy::InnerCounts, Vec<String>, String) {
     let mut bam =
         Reader::from_path(&path).unwrap_or_else(|_| panic!("error reading bam file {path:?}"));
@@ -364,6 +369,12 @@ fn process_bam(
         bins as usize,
     );
 
+    counts
+        .set_depth_writer(
+            &(output_prefix.to_string_lossy() + "-fraguracy-depth.bed.gz").to_string(),
+        )
+        .unwrap();
+
     let mut n_total = 0;
     let mut n_pairs = 0;
     let chroms: Vec<String> = bam
@@ -395,6 +406,9 @@ fn process_bam(
             if b.tid() != last_tid {
                 log::info!("processed chromosome: {}", chroms[last_tid as usize]);
                 last_tid = b.tid();
+
+                // process the remaining entries in the hashmap in last_depth.
+                counts.handle_depth(&chroms[last_tid as usize], i64::MAX);
 
                 if include_regions.is_some() {
                     include_tree = get_tree(&include_regions, &chroms[last_tid as usize]);
@@ -481,6 +495,7 @@ fn extract_main(
                 min_mapping_quality,
                 min_base_qual,
                 reference_as_truth,
+                output_prefix.clone(),
             );
             let output_prefix: PathBuf =
                 (output_prefix.to_string_lossy().to_string() + &sample_name + "-").into();

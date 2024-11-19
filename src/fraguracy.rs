@@ -1,15 +1,21 @@
 use bpci::*;
 use ndarray::prelude::Array;
 use ndarray::Array5;
-use rust_htslib::bam::{
-    record::{Cigar, CigarStringView},
-    IndexedReader, Read, Record,
+use rust_htslib::{
+    bam::{
+        record::{Cigar, CigarStringView},
+        IndexedReader, Read, Record,
+    },
+    bgzf::CompressionLevel,
 };
-use rust_htslib::faidx;
+use rust_htslib::{bgzf, faidx};
 use rust_lapper::Lapper;
+use std::collections::BTreeMap;
+
 use std::collections::HashMap;
 use std::fmt;
 use std::hash::Hash;
+use std::io::Write;
 use std::rc::Rc;
 use std::str;
 
@@ -20,10 +26,16 @@ pub(crate) struct Position {
     pub bq_bin: u8,
 }
 
+/// DepthMap is for a given genome position, the depth at each (aq, bq) pair.
+type DepthMap = HashMap<(u8, u8), u32>;
+
 pub(crate) struct Counts {
     pub(crate) ibam: Option<IndexedReader>,
     //  read, f/r pos, bq, bp, ctx{6} */
     pub(crate) counts: InnerCounts,
+    pub(crate) depth: BTreeMap<u32, DepthMap>,
+    pub(crate) last_depth_entry: Option<(String, u32, u32, String, String, u32)>,
+    pub(crate) depth_writer: Option<bgzf::Writer>,
 }
 
 pub(crate) struct InnerCounts {
@@ -191,10 +203,21 @@ impl InnerCounts {
 impl Counts {
     pub(crate) fn new(ir: Option<IndexedReader>, bins: usize) -> Self {
         Counts {
-            /*                         read1/2, F/R, pos, bq, ctx */
             ibam: ir,
             counts: InnerCounts::new(bins),
+            depth: BTreeMap::new(),
+            last_depth_entry: None,
+            depth_writer: None,
         }
+    }
+
+    pub(crate) fn set_depth_writer(&mut self, path: &str) -> std::io::Result<()> {
+        let mut w = bgzf::Writer::from_path_with_level(path, CompressionLevel::Level(1))
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        w.write_all(b"#chrom\tstart\tend\tread1_bq_bin\tread2_bq_bin\tpair-ovl-depth\n")
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        self.depth_writer = Some(w);
+        Ok(())
     }
 
     #[inline(always)]
@@ -214,6 +237,82 @@ impl Counts {
             'A' | 'T' => 0,
             'C' | 'G' => 1,
             _ => unreachable!(),
+        }
+    }
+
+    pub(crate) fn handle_depth(&mut self, bchrom: &str, bpos: i64) {
+        loop {
+            let pos = *(self
+                .depth
+                .first_key_value()
+                .unwrap_or((&u32::MAX, &DepthMap::new()))
+                .0);
+            if pos == u32::MAX {
+                break;
+            }
+            if (pos as i64) < bpos {
+                let depthmap = self.depth.remove(&pos).unwrap();
+
+                for ((aq, bq), dp) in depthmap.iter() {
+                    let a_bin = Q_LOOKUP[*aq as usize];
+                    let b_bin = Q_LOOKUP[*bq as usize];
+
+                    match &mut self.last_depth_entry {
+                        Some((
+                            last_chrom,
+                            start_pos,
+                            last_pos,
+                            last_a_bin,
+                            last_b_bin,
+                            last_dp,
+                        )) => {
+                            if bchrom == last_chrom
+                                && a_bin == last_a_bin
+                                && b_bin == last_b_bin
+                                && dp == last_dp
+                                && *last_pos + 1 == pos
+                            {
+                                *last_pos = pos;
+                            } else {
+                                if let Some(writer) = &mut self.depth_writer {
+                                    writeln!(
+                                        writer,
+                                        "{}\t{}\t{}\t{}\t{}\t{}",
+                                        last_chrom,
+                                        start_pos,
+                                        *last_pos + 1,
+                                        last_a_bin,
+                                        last_b_bin,
+                                        last_dp
+                                    )
+                                    .expect("error writing to bgzf file");
+                                }
+
+                                self.last_depth_entry = Some((
+                                    bchrom.to_string(),
+                                    pos,
+                                    pos,
+                                    a_bin.to_string(),
+                                    b_bin.to_string(),
+                                    *dp,
+                                ));
+                            }
+                        }
+                        None => {
+                            self.last_depth_entry = Some((
+                                bchrom.to_string(),
+                                pos,
+                                pos,
+                                a_bin.to_string(),
+                                b_bin.to_string(),
+                                *dp,
+                            ));
+                        }
+                    }
+                }
+            } else {
+                break;
+            }
         }
     }
 
@@ -253,6 +352,8 @@ impl Counts {
         let a_qual = a.qual();
         let b_qual = b.qual();
 
+        let mut genome_pos = u32::MAX;
+
         for [a_chunk, b_chunk, g_chunk] in pieces {
             for (ai, bi) in std::iter::zip(a_chunk.start..a_chunk.stop, b_chunk.start..b_chunk.stop)
             {
@@ -264,7 +365,15 @@ impl Counts {
                 if bq < min_base_qual {
                     continue;
                 }
-                let genome_pos = g_chunk.start + (ai - a_chunk.start);
+                genome_pos = g_chunk.start + (ai - a_chunk.start);
+                let aq = Counts::qual_to_bin(aq);
+                let bq = Counts::qual_to_bin(bq);
+                self.depth
+                    .entry(genome_pos)
+                    .or_insert(DepthMap::new())
+                    .entry((aq, bq))
+                    .and_modify(|v| *v += 1)
+                    .or_insert(1);
 
                 if let Some(t) = include_tree {
                     if t.count(genome_pos, genome_pos + 1) == 0 {
@@ -289,9 +398,6 @@ impl Counts {
                         *self.counts.indel_error_positions.entry(p).or_insert(0) += 1;
                     }
                 });
-
-                let aq = Counts::qual_to_bin(aq);
-                let bq = Counts::qual_to_bin(bq);
 
                 let a_base = unsafe { a_seq.decoded_base_unchecked(ai as usize) };
                 let b_base = unsafe { b_seq.decoded_base_unchecked(bi as usize) };
@@ -439,6 +545,7 @@ impl Counts {
                 }
             }
         }
+        self.handle_depth(chrom.as_ref(), genome_pos as i64);
     }
 }
 
