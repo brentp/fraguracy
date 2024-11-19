@@ -1,5 +1,6 @@
 mod combine_counts;
 mod combine_errors;
+mod denominator;
 mod files;
 mod fraguracy;
 //mod plot;
@@ -41,6 +42,49 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
+    #[command(
+        arg_required_else_help = true,
+        about = "calculate denominator for fraguracy using only overlapping bases and distance to homopolymers"
+    )]
+    Denominator {
+        #[arg(required = true, help = "path to bam/cram file to use as denominator")]
+        bam_path: PathBuf,
+
+        #[arg(
+            short = 'm',
+            long,
+            default_value_t = 3,
+            help = "minimum length to consider a homopolymer"
+        )]
+        min_homopolymer_length: u8,
+
+        #[arg(
+            short = 'M',
+            long,
+            default_value_t = 25,
+            help = "maximum distance to a homopolymer to consider"
+        )]
+        max_homopolymer_distance: u8,
+
+        #[arg(short, long, help = "fasta file to use for homopolymer calculation")]
+        fasta: PathBuf,
+
+        #[arg(
+            short = 'Q',
+            long,
+            default_value_t = 50,
+            help = "only consider pairs where both reads have this mapping-quality or higher (good to leave this high)"
+        )]
+        min_mapping_quality: u8,
+
+        #[arg(
+            short,
+            long,
+            default_value_t = String::from("fraguracy-denominator."),
+            help = "prefix for output file. path will be ${prefix}.fraguracy.denominator.bed.gz"
+        )]
+        output_prefix: String,
+    },
     #[command(
         arg_required_else_help = true,
         about = "combine error bed files from extract"
@@ -179,6 +223,22 @@ fn main() -> std::io::Result<()> {
     env_logger::init();
 
     match args.command {
+        Commands::Denominator {
+            bam_path,
+            min_homopolymer_length,
+            max_homopolymer_distance,
+            fasta,
+            min_mapping_quality,
+            output_prefix,
+        } => denominator::denominator_main(
+            bam_path,
+            min_homopolymer_length,
+            max_homopolymer_distance,
+            fasta,
+            min_mapping_quality,
+            output_prefix,
+        ),
+
         Commands::Extract {
             bams,
             fasta,
