@@ -1,14 +1,17 @@
 mod combine_counts;
 mod combine_errors;
-mod denominator;
+mod homopolymer;
+
 mod files;
 mod fraguracy;
+
 //mod plot;
 #[macro_use]
 extern crate lazy_static;
 use clap::{Parser, Subcommand};
 use fraguracy::ConfidenceInterval;
 use linear_map::LinearMap;
+use regex::Regex;
 
 use rust_lapper::{Interval, Lapper};
 
@@ -195,6 +198,25 @@ enum Commands {
         ci: ConfidenceInterval,
 
         #[arg(
+            short,
+            long,
+            help = "do not calculate denominator. This can shorten runtime.",
+            default_value_t = false
+        )]
+        no_denominator: bool,
+
+        #[arg(
+            short,
+            long,
+            help = format!(
+                "regex for homopolymer sequence to consider if denominator is calculated[default: {}]",
+                homopolymer::HP_REGEX
+            ),
+            default_value = homopolymer::HP_REGEX
+        )]
+        homopolymer_regex: String,
+
+        #[arg(
             short = 't',
             long,
             help = "use reference base as 'truth'",
@@ -254,6 +276,8 @@ fn main() -> std::io::Result<()> {
             min_mapping_quality,
             ci,
             reference_as_truth,
+            no_denominator,
+            homopolymer_regex,
         } => extract_main(
             bams,
             fasta,
@@ -265,6 +289,8 @@ fn main() -> std::io::Result<()> {
             min_mapping_quality,
             ci,
             reference_as_truth,
+            no_denominator,
+            homopolymer_regex,
         ), //Commands::Plot { tsv } => plot::plot(tsv),
         Commands::CombineErrors {
             fai_path,
@@ -337,10 +363,12 @@ fn process_bam(
     min_base_qual: u8,
     reference_as_truth: bool,
     output_prefix: PathBuf,
+    re: Option<Regex>,
+    no_denominator: bool,
 ) -> (fraguracy::InnerCounts, Vec<String>, String) {
     let mut bam =
         Reader::from_path(&path).unwrap_or_else(|_| panic!("error reading bam file {path:?}"));
-    bam.set_threads(3).expect("error setting threads");
+    bam.set_threads(1).expect("error setting threads");
     let mut map = FxHashMap::default();
 
     let include_regions = read_bed(regions);
@@ -368,10 +396,16 @@ fn process_bam(
         if reference_as_truth { None } else { Some(ibam) },
         bins as usize,
     );
+    let hmap = bam::Header::from_template(bam.header()).to_hashmap();
+    let sample_name = get_sample_name(hmap);
+    log::info!("found sample {sample_name}");
 
     counts
         .set_depth_writer(
-            &(output_prefix.to_string_lossy() + "-fraguracy-depth.bed.gz").to_string(),
+            &(output_prefix.to_string_lossy().to_string()
+                + &sample_name
+                + "-fraguracy-depth.bed.gz")
+                .to_string(),
         )
         .unwrap();
 
@@ -387,11 +421,7 @@ fn process_bam(
     let mut include_tree: Option<&Lapper<u32, u32>> = get_tree(&include_regions, &chroms[0]);
     let mut exclude_tree: Option<&Lapper<u32, u32>> = get_tree(&exclude_regions, &chroms[0]);
 
-    let hmap = bam::Header::from_template(bam.header()).to_hashmap();
-    let sample_name = get_sample_name(hmap);
-    log::info!("found sample {sample_name}");
-
-    let mut last_tid: i32 = 0;
+    let mut last_tid: i32 = -1;
     bam.rc_records()
         .map(|r| {
             n_total += 1;
@@ -404,7 +434,9 @@ fn process_bam(
                 n_pairs += 1;
             }
             if b.tid() != last_tid {
-                log::info!("processed chromosome: {}", chroms[last_tid as usize]);
+                if last_tid != -1 {
+                    log::info!("processed chromosome: {}", chroms[last_tid as usize]);
+                }
                 last_tid = b.tid();
 
                 // process the remaining entries in the hashmap in last_depth.
@@ -478,9 +510,24 @@ fn extract_main(
     min_mapping_quality: u8,
     ci: ConfidenceInterval,
     reference_as_truth: bool,
+    no_denominator: bool,
+    homopolymer_regex: String,
 ) -> std::io::Result<()> {
     //let args: Vec<String> = env::args().collect();
     let min_base_qual = 20u8;
+
+    let mut re = Some(Regex::new(&homopolymer_regex).expect("error compiling homopolymer regex"));
+
+    if no_denominator {
+        re = None;
+    } else {
+        if fasta_path.is_none() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "fasta path must be provided if denominator is calculated",
+            ));
+        }
+    }
 
     let total_counts = paths
         .par_iter()
@@ -496,6 +543,8 @@ fn extract_main(
                 min_base_qual,
                 reference_as_truth,
                 output_prefix.clone(),
+                re.clone(),
+                no_denominator,
             );
             let output_prefix: PathBuf =
                 (output_prefix.to_string_lossy().to_string() + &sample_name + "-").into();
