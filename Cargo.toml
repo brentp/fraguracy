@@ -6,7 +6,9 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-rust-htslib = { git = "https://github.com/rust-bio/rust-htslib", rev = "6b1551829d98445fab6f89da06c0f86d38f379ce", features = ["libdeflate", "static", "gcs", "s3"] }
+rust-htslib = {features = ["libdeflate", "static", "gcs", "s3"], git = "https://github.com/brentp/rust-htslib.git", branch = "bp-hts-sys" }
+syn = "2.0.87"
+
 libc = "*"
 rustc-hash = "1.1.0"
 lazy_static = "1.4.0"

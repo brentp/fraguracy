@@ -411,7 +411,7 @@ fn process_bam(
             .unwrap()
             .fetch_seq(&chroms[0], 0, i64::MAX as usize)
             .expect("error fetching sequence");
-        Some(find_homopolymers(chrom_seq, &re))
+        Some(find_homopolymers(&chrom_seq, &re))
     } else {
         None
     };
@@ -430,7 +430,11 @@ fn process_bam(
             }
             if b.tid() != last_tid {
                 if last_tid != -1 {
-                    log::info!("processed chromosome: {}", chroms[last_tid as usize]);
+                    log::info!(
+                        "processed chromosome: {} unprocessed orphan pairs: {}",
+                        chroms[last_tid as usize],
+                        map.len()
+                    );
                 }
                 last_tid = b.tid();
 
@@ -445,12 +449,13 @@ fn process_bam(
                 }
 
                 if hp_tree.is_some() {
+                    let chrom_seq = fasta
+                        .as_ref()
+                        .unwrap()
+                        .fetch_seq(&chroms[last_tid as usize], 0, i64::MAX as usize)
+                        .expect("error fetching sequence from fasta.");
                     hp_tree = Some(find_homopolymers(
-                        fasta
-                            .as_ref()
-                            .unwrap()
-                            .fetch_seq(&chroms[last_tid as usize], 0, i64::MAX as usize)
-                            .expect("error fetching sequence from fasta."),
+                        &chrom_seq,
                         &homopolymer_regex.as_ref().unwrap(),
                     ));
                 }
