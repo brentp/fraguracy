@@ -1,6 +1,6 @@
 use bpci::*;
 use ndarray::prelude::Array;
-use ndarray::Array5;
+use ndarray::Array6;
 use rust_htslib::{
     bam::{
         record::{Cigar, CigarStringView},
@@ -12,6 +12,7 @@ use rust_htslib::{bgzf, faidx};
 use rust_lapper::Lapper;
 use std::collections::BTreeMap;
 
+use crate::homopolymer as hp;
 use std::collections::HashMap;
 use std::fmt;
 use std::hash::Hash;
@@ -29,6 +30,8 @@ pub(crate) struct Position {
 /// DepthMap is for a given genome position, the depth at each (aq, bq) pair.
 type DepthMap = HashMap<(u8, u8), u32>;
 
+pub(crate) const MAX_HP_DIST: i8 = 15;
+
 pub(crate) struct Counts {
     pub(crate) ibam: Option<IndexedReader>,
     //  read, f/r pos, bq, bp, ctx{6} */
@@ -40,9 +43,9 @@ pub(crate) struct Counts {
 
 pub(crate) struct InnerCounts {
     // genome_pos
-    pub(crate) errs: Array5<u64>,
-    //  read, f/r, pos, bq, ctx{2} */
-    pub(crate) cnts: Array5<u64>,
+    pub(crate) errs: Array6<u64>,
+    //  read, f/r, pos, bq, ctx{2}, hp_dist */
+    pub(crate) cnts: Array6<u64>,
     pub(crate) mismatches: u64,
     pub(crate) matches: u64,
 
@@ -82,6 +85,7 @@ pub(crate) struct Stat {
     bq_bin: u8,
     read_pos: u8,
     context: [char; 2],
+    homopolymer_distance: i8,
     total_count: u64,
     error_count: u64,
 }
@@ -93,13 +97,14 @@ impl fmt::Display for Stat {
         let (lo, hi) = self.confidence_interval(&self.ci);
         write!(
             f,
-            "{}\t{}\t{}\t{}\t{}{}\t{}\t{}\t{:e}\t{:e}",
+            "{}\t{}\t{}\t{}\t{}{}\t{}\t{}\t{}\t{:e}\t{:e}",
             ["r1", "r2"][self.read12 as usize],
             ["f", "r"][self.fr as usize],
             Q_LOOKUP[self.bq_bin as usize],
             self.read_pos,
             self.context[0],
             self.context[1],
+            self.homopolymer_distance,
             self.total_count,
             self.error_count,
             lo.max(0.0),
@@ -125,7 +130,9 @@ impl fmt::Display for ConfidenceInterval {
 
 impl Stat {
     pub(crate) fn header() -> String {
-        String::from("read12\tFR\tbq_bin\tread_pos\tcontext\ttotal_count\terror_count\terr_rate_lo\terr_rate_hi")
+        String::from(
+            "read12\tFR\tbq_bin\tread_pos\tcontext\thp_dist\ttotal_count\terror_count\terr_rate_lo\terr_rate_hi",
+        )
     }
 
     pub(crate) fn confidence_interval(&self, ci: &ConfidenceInterval) -> (f64, f64) {
@@ -152,32 +159,35 @@ impl Stat {
                 for read_posi in 0..c.cnts.shape()[2] {
                     for bqi in 0..c.cnts.shape()[3] {
                         for ctx6i in 0..c.errs.shape()[4] {
-                            let n_err = c.errs[[readi, fri, read_posi, bqi, ctx6i]];
+                            for hp_dist in 0..c.errs.shape()[5] {
+                                let n_err = c.errs[[readi, fri, read_posi, bqi, ctx6i, hp_dist]];
 
-                            // from ctx6i, we get the original context.
-                            let bases = CONTEXT_TO_CONTEXT2[ctx6i];
+                                // from ctx6i, we get the original context.
+                                let bases = CONTEXT_TO_CONTEXT2[ctx6i];
 
-                            let ctx2i = Counts::base_to_ctx2(bases[0] as u8);
-                            let n_tot = c.cnts[[readi, fri, read_posi, bqi, ctx2i]];
-                            if n_tot < n_err {
-                                eprintln!(
-                                    "BAD: {ctx6i} -> {bases:?}. ctx2i:{ctx2i}",
-                                    ctx6i = ctx6i,
-                                    bases = bases,
-                                    ctx2i = ctx2i
-                                );
+                                let ctx2i = Counts::base_to_ctx2(bases[0] as u8);
+                                let n_tot = c.cnts[[readi, fri, read_posi, bqi, ctx2i, hp_dist]];
+                                if n_tot < n_err {
+                                    eprintln!(
+                                        "BAD: {ctx6i} -> {bases:?}. ctx2i:{ctx2i}",
+                                        ctx6i = ctx6i,
+                                        bases = bases,
+                                        ctx2i = ctx2i
+                                    );
+                                }
+
+                                stats.push(Stat {
+                                    ci: ci.clone(),
+                                    read12: readi as u8,
+                                    fr: fri as u8,
+                                    bq_bin: bqi as u8,
+                                    read_pos: (read_posi * bin_size) as u8,
+                                    context: bases,
+                                    total_count: n_tot,
+                                    error_count: n_err,
+                                    homopolymer_distance: hp_dist as i8 - MAX_HP_DIST,
+                                })
                             }
-
-                            stats.push(Stat {
-                                ci: ci.clone(),
-                                read12: readi as u8,
-                                fr: fri as u8,
-                                bq_bin: bqi as u8,
-                                read_pos: (read_posi * bin_size) as u8,
-                                context: bases,
-                                total_count: n_tot,
-                                error_count: n_err,
-                            })
                         }
                     }
                 }
@@ -190,8 +200,8 @@ impl Stat {
 impl InnerCounts {
     pub(crate) fn new(bins: usize) -> Self {
         InnerCounts {
-            cnts: Array::zeros((2, 2, bins, 5, 2)),
-            errs: Array::zeros((2, 2, bins, 5, 6)),
+            cnts: Array::zeros((2, 2, bins, 5, 2, (2 * MAX_HP_DIST + 1) as usize)),
+            errs: Array::zeros((2, 2, bins, 5, 6, (2 * MAX_HP_DIST + 1) as usize)),
             mismatches: 0,
             matches: 0,
             error_positions: HashMap::new(),
@@ -241,6 +251,9 @@ impl Counts {
     }
 
     pub(crate) fn handle_depth(&mut self, bchrom: &str, bpos: i64) {
+        // this function clears out the BTreeMap of depth entries that are before the current position.
+        // it is not called if --no-denominator is specified.
+        // it writes out the depth entries as they are popped out of the BTreeMap.
         loop {
             let pos = *(self
                 .depth
@@ -328,6 +341,7 @@ impl Counts {
         chrom: N,
         include_tree: &Option<&Lapper<u32, u32>>,
         exclude_tree: &Option<&Lapper<u32, u32>>,
+        hp_tree: &Option<Lapper<u32, u8>>,
     ) {
         let pieces = overlap_pieces(&a.cigar(), &b.cigar(), false);
         if pieces.is_empty() {
@@ -355,6 +369,10 @@ impl Counts {
         let mut genome_pos = u32::MAX;
 
         for [a_chunk, b_chunk, g_chunk] in pieces {
+            let g_start = g_chunk.start.max(MAX_HP_DIST as u32) - MAX_HP_DIST as u32;
+            let g_stop = g_chunk.stop + MAX_HP_DIST as u32;
+            let hps: Option<Vec<_>> = hp_tree.as_ref().map(|t| t.find(g_start, g_stop).collect());
+
             for (ai, bi) in std::iter::zip(a_chunk.start..a_chunk.stop, b_chunk.start..b_chunk.stop)
             {
                 let aq = a_qual[ai as usize];
@@ -368,12 +386,15 @@ impl Counts {
                 genome_pos = g_chunk.start + (ai - a_chunk.start);
                 let aq = Counts::qual_to_bin(aq);
                 let bq = Counts::qual_to_bin(bq);
-                self.depth
-                    .entry(genome_pos)
-                    .or_insert(DepthMap::new())
-                    .entry((aq, bq))
-                    .and_modify(|v| *v += 1)
-                    .or_insert(1);
+
+                if self.depth_writer.is_some() {
+                    self.depth
+                        .entry(genome_pos)
+                        .or_default()
+                        .entry((aq, bq))
+                        .and_modify(|v| *v += 1)
+                        .or_insert(1);
+                }
 
                 if let Some(t) = include_tree {
                     if t.count(genome_pos, genome_pos + 1) == 0 {
@@ -405,7 +426,15 @@ impl Counts {
                 let a_bin = (ai / bin_size) as usize;
                 let b_bin = (bi / bin_size) as usize;
 
-                /* read1/2, F/R, pos, mq, bq, ctx */
+                let a_hp_dist = hp::hp_distance(
+                    hps.as_deref(),
+                    genome_pos,
+                    a.pos() as u32,
+                    a.cigar().end_pos() as u32,
+                    if a.is_reverse() { -1 } else { 1 },
+                );
+
+                /* read1/2, F/R, pos, mq, bq, ctx, hp_dist */
                 let mut a_index = [
                     1 - a.is_first_in_template() as usize, // 0 r1
                     (a.is_reverse() as usize),             //
@@ -413,7 +442,16 @@ impl Counts {
                     aq as usize,
                     // NOTE that this could be an error so we might change this later if we learn a_base is an error
                     Counts::base_to_ctx2(a_base),
+                    (a_hp_dist + MAX_HP_DIST) as usize,
                 ];
+
+                let b_hp_dist = hp::hp_distance(
+                    hps.as_deref(),
+                    genome_pos,
+                    b.pos() as u32,
+                    b.cigar().end_pos() as u32,
+                    if b.is_reverse() { -1 } else { 1 },
+                );
 
                 let mut b_index = [
                     1 - b.is_first_in_template() as usize,
@@ -422,6 +460,7 @@ impl Counts {
                     bq as usize,
                     // NOTE that this could be an error so we might change this later if we learn b_base is an error
                     Counts::base_to_ctx2(b_base),
+                    (b_hp_dist + MAX_HP_DIST) as usize,
                 ];
 
                 if a_base == b_base {
@@ -545,7 +584,9 @@ impl Counts {
                 }
             }
         }
-        self.handle_depth(chrom.as_ref(), genome_pos as i64);
+        if self.depth_writer.is_some() {
+            self.handle_depth(chrom.as_ref(), genome_pos as i64);
+        }
     }
 }
 
