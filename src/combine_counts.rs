@@ -11,6 +11,7 @@ pub(crate) struct Count {
     read_pos: u8,
     bq_bin: u8,
     context: [char; 2],
+    homopolymer_dist: i8,
     total: u32,
     errors: u32,
 }
@@ -22,6 +23,7 @@ impl std::ops::AddAssign<Count> for Count {
         assert!(self.read_pos == o.read_pos);
         assert!(self.bq_bin == o.bq_bin);
         assert!(self.context == o.context);
+        assert!(self.homopolymer_dist == o.homopolymer_dist);
         self.errors += o.errors;
         self.total += o.total;
     }
@@ -56,6 +58,12 @@ impl Count {
                     ctx.next().expect("expecting two characters for context"),
                 ]
             },
+            homopolymer_dist: sp
+                .next()
+                .expect("not enough columns in line {s}")
+                .trim()
+                .parse::<i8>()
+                .expect("error parsing int"),
             total: sp
                 .next()
                 .expect("not enough columns in line {s}")
@@ -88,6 +96,10 @@ pub(crate) fn combine_counts_main(
                     line.starts_with("read12"),
                     "expecting header line from counts file"
                 );
+                assert!(
+                    line.contains("homopolymer_dist"),
+                    "expecting homopolymer_dist in header please run with newer version of fraguracy"
+                );
                 header = line;
                 continue;
             }
@@ -109,13 +121,14 @@ pub(crate) fn combine_counts_main(
     for c in counts.iter() {
         writeln!(
             out,
-            "r{}\t{}\t{}\t{}\t{}{}\t{}\t{}",
+            "r{}\t{}\t{}\t{}\t{}{}\t{}\t{}\t{}",
             c.read12 + 1,
             ['f', 'r'][c.orientation as usize],
             fraguracy::Q_LOOKUP[c.bq_bin as usize],
             c.read_pos,
             c.context[0],
             c.context[1],
+            c.homopolymer_dist,
             c.total,
             c.errors
         )?;
@@ -130,7 +143,7 @@ mod tests {
 
     #[test]
     fn test_from_line() {
-        let line = "r1\tf\t05-19\t0\tAC\t61502\t609";
+        let line = "r1\tf\t05-19\t0\tAC\t-1\t61502\t609";
 
         let c = Count::from_line(line);
         assert_eq!(c.read12, 0);
@@ -138,6 +151,7 @@ mod tests {
         assert_eq!(c.bq_bin, 1);
         assert_eq!(c.read_pos, 0);
         assert_eq!(c.context, ['A', 'C']);
+        assert_eq!(c.homopolymer_dist, -1);
         assert_eq!(c.total, 61502);
         assert_eq!(c.errors, 609);
     }
@@ -150,12 +164,14 @@ mod tests {
             bq_bin: 2,
             read_pos: 3,
             context: ['A', 'T'],
+            homopolymer_dist: -1,
             total: 32,
             errors: 1,
         };
         let mut b = a.clone();
         b.errors = 3;
         a += b;
+        assert_eq!(a.homopolymer_dist, -1);
 
         assert_eq!(a.errors, 4);
     }
