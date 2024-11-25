@@ -9,10 +9,11 @@ use std::error::Error;
 use std::fs::File;
 use std::io;
 use std::io::{BufRead, BufReader, Write};
+use std::ops::Add;
 use std::path::PathBuf;
 use std::string::String;
 
-#[derive(Eq, Debug)]
+#[derive(Eq, Debug, Default, Clone)]
 struct Interval {
     tid: i32,
     chrom: String,
@@ -53,6 +54,32 @@ fn read_fai(path: PathBuf) -> HashMap<String, i32> {
     h
 }
 
+impl Add<&Interval> for &Interval {
+    type Output = Interval;
+    fn add(self, other: &Interval) -> Self::Output {
+        assert_eq!(self.chrom, other.chrom);
+        assert_eq!(self.start, other.start);
+        assert_eq!(self.end, other.end);
+        assert_eq!(self.group, other.group);
+        let counts = self
+            .count
+            .iter()
+            .zip(other.count.iter())
+            .map(|(a, b)| a + b);
+        // convert counts to [u32, 6]
+        let counts: [u32; 6] = counts
+            .collect::<Vec<_>>()
+            .try_into()
+            .expect("error converting counts");
+        let iv = Interval {
+            chrom: self.chrom.clone(),
+            count: counts,
+            ..*self
+        };
+        iv
+    }
+}
+
 impl IntervalHeap {
     fn new(paths: Vec<PathBuf>, fai_path: PathBuf) -> IntervalHeap {
         let fhs: Vec<Box<dyn BufRead>> = paths
@@ -75,9 +102,9 @@ impl IntervalHeap {
                 let line = fh.read_line(&mut buf);
                 if line.is_ok() && !buf.starts_with('#') {
                     let r = parse_bed_line(&buf, file_i as u32, &(ih.chom_to_tid));
-                    ih.h.push(Reverse(
-                        r.unwrap_or_else(|_| panic!("Error parsing first line from file: '{buf}'")),
-                    ));
+                    ih.h.push(Reverse(r.unwrap_or_else(|_| {
+                        panic!("Error parsing first line from file: '{buf}'")
+                    })));
                     break;
                 }
             });
@@ -91,7 +118,7 @@ fn parse_bed_line(
 ) -> Result<Interval, Box<dyn Error>> {
     let toks: Vec<&str> = line.trim().split('\t').collect();
     // can be 6 if combine-errors was already run once.
-    let mut iv = if toks.len() == 5 || toks.len() == 6 {
+    let mut iv = if toks.len() == 6 || toks.len() == 7 {
         let mut iv = Interval {
             tid: 0,
             chrom: String::from(toks[0]),
@@ -101,6 +128,7 @@ fn parse_bed_line(
                 .get(toks[3].trim())
                 .unwrap_or_else(|| panic!("unknown bq bin: {}", toks[3]))),
             count: [0; 6],
+
             file_i,
         };
         // toks[4] is the total count, which we don't need. because we can sum the count from toks[5]
@@ -137,7 +165,10 @@ fn parse_bed_line(
         iv.count[0] = str::parse::<u32>(toks[3])?;
         iv
     } else {
-        panic!("expecting 4 or 5 columns in bed file, found {}", toks.len());
+        panic!(
+            "expecting 4, 6, or 7 columns in bed file, found {}",
+            toks.len()
+        );
     };
     iv.tid = chrom_to_tid[&iv.chrom];
     Ok(iv)
@@ -239,18 +270,20 @@ pub(crate) fn combine_errors_main(
             .iter()
             .filter(|iv| iv.count.iter().any(|&c| c > 0))
             .count();
+        let iv0 = ivs[0].clone();
+        let iv = ivs.iter().skip(1).fold(iv0, |acc, iv| &acc + iv);
 
-        let (total_count, context_str) = crate::files::format_context_counts(ivs[0].count);
+        let (total_count, context_str) = crate::files::format_context_counts(iv.count);
 
         let line = format!(
             "{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
-            ivs[0].chrom,
-            ivs[0].start,
-            ivs[0].end,
-            if ivs[0].group == u8::MAX {
+            iv.chrom,
+            iv.start,
+            iv.end,
+            if iv.group == u8::MAX {
                 "NA"
             } else {
-                fraguracy::Q_LOOKUP[ivs[0].group as usize]
+                fraguracy::Q_LOOKUP[iv.group as usize]
             },
             total_count,
             context_str,
