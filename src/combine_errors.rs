@@ -71,12 +71,12 @@ impl Add<&Interval> for &Interval {
             .collect::<Vec<_>>()
             .try_into()
             .expect("error converting counts");
-        let iv = Interval {
+        
+        Interval {
             chrom: self.chrom.clone(),
             count: counts,
             ..*self
-        };
-        iv
+        }
     }
 }
 

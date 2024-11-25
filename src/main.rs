@@ -371,7 +371,7 @@ fn process_bam(
             .unwrap()
             .fetch_seq(&chroms[0], 0, i64::MAX as usize)
             .expect("error fetching sequence");
-        Some(find_homopolymers(&chrom_seq, &re))
+        Some(find_homopolymers(&chrom_seq, re))
     } else {
         None
     };
@@ -416,7 +416,7 @@ fn process_bam(
                         .expect("error fetching sequence from fasta.");
                     hp_tree = Some(find_homopolymers(
                         &chrom_seq,
-                        &homopolymer_regex.as_ref().unwrap(),
+                        homopolymer_regex.as_ref().unwrap(),
                     ));
                 }
             }
