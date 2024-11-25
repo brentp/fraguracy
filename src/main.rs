@@ -37,8 +37,13 @@ use std::str;
 
 #[derive(Debug, Parser)]
 #[command(name = "fraguracy")]
-#[command(version)]
-// see: https://docs.rs/clap/latest/clap/_cookbook/git_derive/index.html
+#[command(
+    version,
+    about = "fraguracy: unbiased error profile analysis for short read sequencing",
+    author = "Brent S Pedersen",
+    help_template = "{about}\nversion:{version}\n\n{usage-heading} {usage} \n\nOPTIONS:\n{options}\n\n\x1b[1m\x1b[4mCOMMANDS:\x1b[0m\n{subcommands}"
+)]
+#[command(arg_required_else_help = true)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -46,51 +51,6 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
-    /*
-    #[command(
-        arg_required_else_help = true,
-        about = "calculate denominator for fraguracy using only overlapping bases and distance to homopolymers"
-    )]
-    Denominator {
-        #[arg(required = true, help = "path to bam/cram file to use as denominator")]
-        bam_path: PathBuf,
-
-        #[arg(
-            short = 'm',
-            long,
-            default_value_t = 3,
-            help = "minimum length to consider a homopolymer"
-        )]
-        min_homopolymer_length: u8,
-
-        #[arg(
-            short = 'M',
-            long,
-            default_value_t = 25,
-            help = "maximum distance to a homopolymer to consider"
-        )]
-        max_homopolymer_distance: u8,
-
-        #[arg(short, long, help = "fasta file to use for homopolymer calculation")]
-        fasta: PathBuf,
-
-        #[arg(
-            short = 'Q',
-            long,
-            default_value_t = 50,
-            help = "only consider pairs where both reads have this mapping-quality or higher (good to leave this high)"
-        )]
-        min_mapping_quality: u8,
-
-        #[arg(
-            short,
-            long,
-            default_value_t = String::from("fraguracy-denominator."),
-            help = "prefix for output file. path will be ${prefix}.fraguracy.denominator.bed.gz"
-        )]
-        output_prefix: String,
-    },
-    */
     #[command(
         arg_required_else_help = true,
         about = "combine error bed files from extract"
