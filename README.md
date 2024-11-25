@@ -29,16 +29,16 @@ $ fraguracy extract \
 $ python plot.py fraguracy-$sample-consensus-counts.txt # writes read.html
 
 $ head fraguracy-$sample-errors.bed # records base position of every error observed and count of errors at that site.
-chrom	start	stop	bq_bin	count
-chr1	75822283	75822284	05-19	6	
-chr1	75822287	75822288	20-36	4	
-chr1	75822287	75822288	37-59	3	
-chr1	75822287	75822288	60+	2	
-chr1	75822341	75822342	05-19	2	
-chr1	75822352	75822353	20-36	2	
-chr1	75822360	75822361	20-36	2	
-chr1	241850751	241850752	37-59	2	
-chr1	241850752	241850753	20-36	2	
+chrom	start	stop	bq_bin	count	contexts
+chr1	75822283	75822284	05-19	6	AC:4,AT:2
+chr1	75822287	75822288	20-36	4	TC:4
+chr1	75822287	75822288	37-59	3	TC:3
+chr1	75822287	75822288	60+	2	CA:2
+chr1	75822341	75822342	05-19	2	TC:2
+chr1	75822352	75822353	20-36	2	GT:2
+chr1	75822360	75822361	20-36	2	AG:2
+chr1	241850751	241850752	37-59	2	TC:2
+chr1	241850752	241850753	20-36	2	TA:1,TC:1
 ```
 
 There is also an `$sample-indel-errors.bed` file that contains the columns:
@@ -61,6 +61,8 @@ this will prevent a small percentage of sites (often around homopolymers) from d
 ## CLI
 
 ```
+error profile pair overlaps in bam/cram
+
 Usage: fraguracy extract [OPTIONS] [BAMS]...
 
 Arguments:
@@ -83,6 +85,10 @@ Options:
           only consider pairs where both reads have this mapping-quality or higher (good to leave this high) [default: 50]
   -c, --ci <CI>
           method for confidence interval calculation (see rust bpci crate) [default: agresti-coull] [possible values: agresti-coull, wald, wilson]
+  -n, --no-denominator
+          do not calculate denominator. This can shorten runtime.
+  -H, --homopolymer-regex <HOMOPOLYMER_REGEX>
+          regex for homopolymer sequence to consider if denominator is calculated[default: A{3,}|C{3,}|G{3,}|T{3,}] [default: A{3,}|C{3,}|G{3,}|T{3,}]
   -t, --reference-as-truth
           use reference base as 'truth'
   -h, --help
@@ -115,7 +121,7 @@ The aim is to create a model of errors. Many factors can be predictive of the li
 The dimensionality is a consideration because if the data is too sparse, prediction is less reliable.
 Because we determine accuracy by the mapping, it is best to require a high mapping-quality.
 Therefore we limit to: **Base-Quality**, **Sequence Context**, **Read**, and **Position in Read**
-as described and binned below. With those binnings we have 15,000 possible combinations (5 * 6 * 2 * $read_length / $bin-size )
+as described and binned below. With those binnings we have **189,720** possible combinations (5 * 6 * 2 * 2 * $read_length / $bin-size * 31 )
 
 For each combination, while iterating over the bam, we store the number of errors and the number of total bases
 in each bin. These become, respectively, the numerator and denominator for the error-rate for that set of parameters.
@@ -149,6 +155,10 @@ Read 1 or Read 2
 ### Read Position (50)
 
 read position is simply divided by 3. so bins of 3 bases.
+
+### Homopolymer distance (30)
+
+The errors are also partitioned by homopolymer distance up to +- 15. all errors beyond 15 are put in the 15 base bin
 
 
 # vcfanno

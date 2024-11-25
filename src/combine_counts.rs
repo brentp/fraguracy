@@ -97,10 +97,11 @@ pub(crate) fn combine_counts_main(
                     "expecting header line from counts file"
                 );
                 assert!(
-                    line.contains("homopolymer_dist"),
-                    "expecting homopolymer_dist in header please run with newer version of fraguracy"
+                    line.contains("hp_dist"),
+                    "expecting hp_dist in header please run with newer version of fraguracy"
                 );
-                header = line;
+                // take the first 8 columns as the header
+                header = line.split('\t').take(8).collect::<Vec<_>>().join("\t");
                 continue;
             }
             let mut c = Count::from_line(&line);

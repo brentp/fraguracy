@@ -166,7 +166,7 @@ enum Commands {
         no_denominator: bool,
 
         #[arg(
-            short,
+            short = 'H',
             long,
             help = format!(
                 "regex for homopolymer sequence to consider if denominator is calculated[default: {}]",
