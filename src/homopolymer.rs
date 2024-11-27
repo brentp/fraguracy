@@ -18,6 +18,8 @@ pub(crate) fn find_homopolymers(seq: &[u8], re: &Regex) -> Lapper<u32, u8> {
 
 /// return a negative number if the hp is before the position, accounting for strand.
 /// and 0 if the hp contains the position, otherwise a positive number.
+///  hphphp---pos---->
+///
 pub(crate) fn hp_distance(
     hps: Option<&[&Interval<u32, u8>]>,
     pos: u32,
@@ -30,27 +32,48 @@ pub(crate) fn hp_distance(
     for hp in hps.map(|hps| hps.iter()).unwrap_or_default() {
         // first we check if the hp is within 3 bases of the read start or stop.
         // since this could truncate the hp and not affect the read.
-        if pos < hp.start + 3 && pos > hp.stop.max(3) - 3 {
+        // cases to exclude:
+        // read: ----------->
+        // hp:   AAAAA
+        // pos:
+
+        if hp.stop >= read_start && hp.stop < read_start + 3 {
             continue;
         }
+        if hp.start < read_stop && hp.start > read_stop - 3 {
+            continue;
+        }
+
         assert!(pos >= read_start && pos <= read_stop);
 
-        // now we check distance of pos to hp.
-        let mut d = (if pos < hp.start {
-            hp.start - pos
+        let d = if pos < hp.start {
+            (hp.start - pos) as i64
         } else if pos > hp.stop {
-            pos - hp.stop
+            -((pos - hp.stop) as i64)
         } else {
-            0
-        })
-        .min(crate::fraguracy::MAX_HP_DIST as u32) as i8;
+            0i64
+        };
+        // now we check distance of pos to hp.
+        let mut d = d.clamp(
+            -crate::fraguracy::MAX_HP_DIST as i64,
+            crate::fraguracy::MAX_HP_DIST as i64,
+        ) as i8;
         if strand == -1 {
             d = -d;
         }
-        if d < dist {
+        //dbg!(pos, hp.start, hp.stop, strand, d);
+        if d.abs() < dist.abs() {
             dist = d;
         }
     }
+    /*
+    if dist != crate::fraguracy::MAX_HP_DIST {
+        eprintln!(
+            "pos: {}, read: {}-{}, strand: {}, dist: {}",
+            pos, read_start, read_stop, strand, dist
+        );
+    }
+    */
     dist
 }
 
@@ -91,8 +114,8 @@ mod tests {
     #[test]
     fn test_hp_distance() {
         let hp = vec![Interval {
-            start: 10,
-            stop: 13,
+            start: 9,
+            stop: 12,
             val: 0,
         }];
         let hp_refs: Vec<&Interval<u32, u8>> = hp.iter().collect();
@@ -104,15 +127,9 @@ mod tests {
         );
 
         // Test forward strand
-        let hp = vec![Interval {
-            start: 10,
-            stop: 13,
-            val: 0,
-        }];
-        let hp_refs: Vec<&Interval<u32, u8>> = hp.iter().collect();
-        assert_eq!(hp_distance(Some(&hp_refs), 15, 5, 20, 1,), 2);
+        assert_eq!(hp_distance(Some(&hp_refs), 15, 5, 20, 1,), -3);
 
         // Test reverse strand
-        assert_eq!(hp_distance(Some(&hp_refs), 15, 5, 20, -1,), -2);
+        assert_eq!(hp_distance(Some(&hp_refs), 15, 5, 20, -1,), 3);
     }
 }

@@ -432,7 +432,7 @@ impl Counts {
                     a.pos() as u32,
                     a.cigar().end_pos() as u32,
                     if a.is_reverse() { -1 } else { 1 },
-                );
+                ) + MAX_HP_DIST;
 
                 /* read1/2, F/R, pos, mq, bq, ctx, hp_dist */
                 let mut a_index = [
@@ -442,7 +442,7 @@ impl Counts {
                     aq as usize,
                     // NOTE that this could be an error so we might change this later if we learn a_base is an error
                     Counts::base_to_ctx2(a_base),
-                    (a_hp_dist + MAX_HP_DIST) as usize,
+                    a_hp_dist as usize,
                 ];
 
                 let b_hp_dist = hp::hp_distance(
@@ -451,7 +451,7 @@ impl Counts {
                     b.pos() as u32,
                     b.cigar().end_pos() as u32,
                     if b.is_reverse() { -1 } else { 1 },
-                );
+                ) + MAX_HP_DIST;
 
                 let mut b_index = [
                     1 - b.is_first_in_template() as usize,
@@ -460,7 +460,7 @@ impl Counts {
                     bq as usize,
                     // NOTE that this could be an error so we might change this later if we learn b_base is an error
                     Counts::base_to_ctx2(b_base),
-                    (b_hp_dist + MAX_HP_DIST) as usize,
+                    b_hp_dist as usize,
                 ];
 
                 if a_base == b_base {
