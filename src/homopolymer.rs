@@ -25,7 +25,7 @@ pub(crate) fn hp_distance(
     pos: u32,
     read_start: u32,
     read_stop: u32,
-    strand: i8,
+    _strand: i8,
 ) -> i8 {
     let mut dist = crate::fraguracy::MAX_HP_DIST;
     // strand will be 1 for forward, -1 for reverse
@@ -54,13 +54,15 @@ pub(crate) fn hp_distance(
             0i64
         };
         // now we check distance of pos to hp.
-        let mut d = d.clamp(
+        let d = d.clamp(
             -crate::fraguracy::MAX_HP_DIST as i64,
             crate::fraguracy::MAX_HP_DIST as i64,
         ) as i8;
+        /*
         if strand == -1 {
             d = -d;
         }
+        */
         //dbg!(pos, hp.start, hp.stop, strand, d);
         if d.abs() < dist.abs() {
             dist = d;
@@ -130,6 +132,6 @@ mod tests {
         assert_eq!(hp_distance(Some(&hp_refs), 15, 5, 20, 1,), -3);
 
         // Test reverse strand
-        assert_eq!(hp_distance(Some(&hp_refs), 15, 5, 20, -1,), 3);
+        assert_eq!(hp_distance(Some(&hp_refs), 15, 5, 20, -1,), -3);
     }
 }
