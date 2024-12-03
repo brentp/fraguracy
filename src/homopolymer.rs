@@ -27,7 +27,7 @@ pub(crate) fn hp_distance(
     read_stop: u32,
     _strand: i8,
 ) -> i8 {
-    let mut dist = crate::fraguracy::MAX_HP_DIST;
+    let mut dist = crate::fraguracy::MAX_HP_DIST + 1;
     // strand will be 1 for forward, -1 for reverse
     for hp in hps.map(|hps| hps.iter()).unwrap_or_default() {
         // first we check if the hp is within 3 bases of the read start or stop.
@@ -76,7 +76,7 @@ pub(crate) fn hp_distance(
         );
     }
     */
-    dist
+    dist.min(crate::fraguracy::MAX_HP_DIST)
 }
 
 #[cfg(test)]
