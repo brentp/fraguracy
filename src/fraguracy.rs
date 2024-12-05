@@ -95,6 +95,11 @@ unsafe impl std::marker::Sync for Counts {}
 impl fmt::Display for Stat {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let (lo, hi) = self.confidence_interval(&self.ci);
+        let hp_dist_str = if self.homopolymer_distance == MAX_HP_DIST * 2 + 1 {
+            "NA".to_string()
+        } else {
+            (self.homopolymer_distance - MAX_HP_DIST).to_string()
+        };
         write!(
             f,
             "{}\t{}\t{}\t{}\t{}{}\t{}\t{}\t{}\t{:e}\t{:e}",
@@ -104,7 +109,7 @@ impl fmt::Display for Stat {
             self.read_pos,
             self.context[0],
             self.context[1],
-            self.homopolymer_distance,
+            hp_dist_str,
             self.total_count,
             self.error_count,
             lo.max(0.0),
@@ -200,8 +205,8 @@ impl Stat {
 impl InnerCounts {
     pub(crate) fn new(bins: usize) -> Self {
         InnerCounts {
-            cnts: Array::zeros((2, 2, bins, 5, 2, (2 * MAX_HP_DIST + 1) as usize)),
-            errs: Array::zeros((2, 2, bins, 5, 6, (2 * MAX_HP_DIST + 1) as usize)),
+            cnts: Array::zeros((2, 2, bins, 5, 2, (2 * MAX_HP_DIST + 2) as usize)),
+            errs: Array::zeros((2, 2, bins, 5, 6, (2 * MAX_HP_DIST + 2) as usize)),
             mismatches: 0,
             matches: 0,
             error_positions: HashMap::new(),
@@ -432,7 +437,19 @@ impl Counts {
                     a.pos() as u32,
                     a.cigar().end_pos() as u32,
                     if a.is_reverse() { -1 } else { 1 },
-                ) + MAX_HP_DIST;
+                )
+                .map(|d| (d + MAX_HP_DIST) as usize)
+                .unwrap_or((2 * MAX_HP_DIST + 1) as usize);
+
+                let b_hp_dist = hp::hp_distance(
+                    hps.as_deref(),
+                    genome_pos,
+                    b.pos() as u32,
+                    b.cigar().end_pos() as u32,
+                    if b.is_reverse() { -1 } else { 1 },
+                )
+                .map(|d| (d + MAX_HP_DIST) as usize)
+                .unwrap_or((2 * MAX_HP_DIST + 1) as usize);
 
                 /* read1/2, F/R, pos, mq, bq, ctx, hp_dist */
                 let mut a_index = [
@@ -442,16 +459,8 @@ impl Counts {
                     aq as usize,
                     // NOTE that this could be an error so we might change this later if we learn a_base is an error
                     Counts::base_to_ctx2(a_base),
-                    a_hp_dist as usize,
+                    a_hp_dist,
                 ];
-
-                let b_hp_dist = hp::hp_distance(
-                    hps.as_deref(),
-                    genome_pos,
-                    b.pos() as u32,
-                    b.cigar().end_pos() as u32,
-                    if b.is_reverse() { -1 } else { 1 },
-                ) + MAX_HP_DIST;
 
                 let mut b_index = [
                     1 - b.is_first_in_template() as usize,
@@ -460,7 +469,7 @@ impl Counts {
                     bq as usize,
                     // NOTE that this could be an error so we might change this later if we learn b_base is an error
                     Counts::base_to_ctx2(b_base),
-                    b_hp_dist as usize,
+                    b_hp_dist,
                 ];
 
                 if a_base == b_base {

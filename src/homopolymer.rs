@@ -18,6 +18,7 @@ pub(crate) fn find_homopolymers(seq: &[u8], re: &Regex) -> Lapper<u32, u8> {
 
 /// return a negative number if the hp is before the position, accounting for strand.
 /// and 0 if the hp contains the position, otherwise a positive number.
+/// Returns None if the distance is greater than MAX_HP_DIST
 ///  hphphp---pos---->
 ///
 pub(crate) fn hp_distance(
@@ -26,8 +27,8 @@ pub(crate) fn hp_distance(
     read_start: u32,
     read_stop: u32,
     _strand: i8,
-) -> i8 {
-    let mut dist = crate::fraguracy::MAX_HP_DIST + 1;
+) -> Option<i8> {
+    let mut dist: Option<i8> = None;
     // strand will be 1 for forward, -1 for reverse
     for hp in hps.map(|hps| hps.iter()).unwrap_or_default() {
         // first we check if the hp is within 3 bases of the read start or stop.
@@ -47,36 +48,23 @@ pub(crate) fn hp_distance(
         assert!(pos >= read_start && pos <= read_stop);
 
         let d = if pos < hp.start {
-            (hp.start - pos) as i64
+            hp.start as i64 - pos as i64
         } else if pos > hp.stop {
-            -((pos - hp.stop) as i64)
+            -(pos as i64 - hp.stop as i64)
         } else {
             0i64
         };
         // now we check distance of pos to hp.
-        let d = d.clamp(
-            -crate::fraguracy::MAX_HP_DIST as i64,
-            crate::fraguracy::MAX_HP_DIST as i64,
-        ) as i8;
-        /*
-        if strand == -1 {
-            d = -d;
+        if d < -crate::fraguracy::MAX_HP_DIST as i64 || d > crate::fraguracy::MAX_HP_DIST as i64 {
+            continue;
         }
-        */
-        //dbg!(pos, hp.start, hp.stop, strand, d);
-        if d.abs() < dist.abs() {
-            dist = d;
+
+        let d = d as i8;
+        if dist.is_none() || d.abs() < dist.unwrap().abs() {
+            dist = Some(d);
         }
     }
-    /*
-    if dist != crate::fraguracy::MAX_HP_DIST {
-        eprintln!(
-            "pos: {}, read: {}-{}, strand: {}, dist: {}",
-            pos, read_start, read_stop, strand, dist
-        );
-    }
-    */
-    dist.min(crate::fraguracy::MAX_HP_DIST)
+    dist
 }
 
 #[cfg(test)]
@@ -123,15 +111,15 @@ mod tests {
         let hp_refs: Vec<&Interval<u32, u8>> = hp.iter().collect();
 
         // Test homopolymer near read end
-        assert_eq!(
-            hp_distance(Some(&hp_refs), 11, 10, 20, 1,),
-            crate::fraguracy::MAX_HP_DIST
-        );
+        assert_eq!(hp_distance(Some(&hp_refs), 11, 10, 20, 1,), None);
 
         // Test forward strand
-        assert_eq!(hp_distance(Some(&hp_refs), 15, 5, 20, 1,), -3);
+        assert_eq!(hp_distance(Some(&hp_refs), 15, 5, 20, 1,), Some(-3));
 
         // Test reverse strand
-        assert_eq!(hp_distance(Some(&hp_refs), 15, 5, 20, -1,), -3);
+        assert_eq!(hp_distance(Some(&hp_refs), 15, 5, 20, -1,), Some(-3));
+
+        // Test distant homopolymer
+        assert_eq!(hp_distance(Some(&hp_refs), 115, 105, 120, 1,), None);
     }
 }
