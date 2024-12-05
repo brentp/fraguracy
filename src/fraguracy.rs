@@ -95,10 +95,10 @@ unsafe impl std::marker::Sync for Counts {}
 impl fmt::Display for Stat {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let (lo, hi) = self.confidence_interval(&self.ci);
-        let hp_dist_str = if self.homopolymer_distance == MAX_HP_DIST * 2 + 1 {
+        let hp_dist_str = if self.homopolymer_distance == MAX_HP_DIST + 1 {
             "NA".to_string()
         } else {
-            (self.homopolymer_distance - MAX_HP_DIST).to_string()
+            self.homopolymer_distance.to_string()
         };
         write!(
             f,

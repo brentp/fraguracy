@@ -13,6 +13,7 @@ pub(crate) fn find_homopolymers(seq: &[u8], re: &Regex) -> Lapper<u32, u8> {
             val: 0,
         })
         .collect();
+    log::info!("found {} homopolymers with regex: {re}", intervals.len());
     Lapper::new(intervals)
 }
 

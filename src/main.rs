@@ -113,6 +113,9 @@ enum Commands {
         )]
         output_prefix: String,
 
+        #[arg(short, long, help = "restrict analysis to this chromosome")]
+        chromosome: Option<String>,
+
         #[arg(
             short,
             long,
@@ -211,6 +214,7 @@ fn main() -> std::io::Result<()> {
         Commands::Extract {
             bams,
             fasta,
+            chromosome,
             output_prefix,
             regions,
             exclude_regions,
@@ -224,6 +228,7 @@ fn main() -> std::io::Result<()> {
         } => extract_main(
             bams,
             fasta,
+            chromosome,
             PathBuf::from(output_prefix),
             regions,
             exclude_regions,
@@ -299,6 +304,7 @@ fn process_bam(
     path: PathBuf,
     fasta_path: Option<PathBuf>,
     regions: Option<PathBuf>,
+    chromosome: Option<String>,
     exclude_regions: Option<PathBuf>,
     bin_size: u32,
     max_read_length: u32,
@@ -309,8 +315,8 @@ fn process_bam(
     no_denominator: bool,
     homopolymer_regex: Option<Regex>,
 ) -> (fraguracy::InnerCounts, Vec<String>, String) {
-    let mut bam =
-        Reader::from_path(&path).unwrap_or_else(|_| panic!("error reading bam file {path:?}"));
+    let mut bam = IndexedReader::from_path(&path)
+        .unwrap_or_else(|_| panic!("error reading bam file {path:?}"));
     bam.set_threads(1).expect("error setting threads");
     let mut map = FxHashMap::default();
 
@@ -354,6 +360,14 @@ fn process_bam(
             .unwrap();
     }
 
+    if let Some(chromosome) = chromosome {
+        if let Err(e) = bam.fetch(bam::FetchDefinition::String(chromosome.as_bytes())) {
+            log::error!("error fetching chromosome {chromosome}: {e}. iterating over all reads.");
+        } else {
+            log::info!("limiting analysis to chromosome: \"{chromosome}");
+        }
+    }
+
     let mut n_total = 0;
     let mut n_pairs = 0;
     let chroms: Vec<String> = bam
@@ -365,16 +379,7 @@ fn process_bam(
 
     let mut include_tree: Option<&Lapper<u32, u32>> = get_tree(&include_regions, &chroms[0]);
     let mut exclude_tree: Option<&Lapper<u32, u32>> = get_tree(&exclude_regions, &chroms[0]);
-    let mut hp_tree: Option<Lapper<u32, u8>> = if let Some(ref re) = homopolymer_regex {
-        let chrom_seq = fasta
-            .as_ref()
-            .unwrap()
-            .fetch_seq(&chroms[0], 0, i64::MAX as usize)
-            .expect("error fetching sequence");
-        Some(find_homopolymers(&chrom_seq, re))
-    } else {
-        None
-    };
+    let mut hp_tree: Option<Lapper<u32, u8>> = None;
 
     let mut last_tid: i32 = -1;
     bam.rc_records()
@@ -408,16 +413,13 @@ fn process_bam(
                     exclude_tree = get_tree(&exclude_regions, &chroms[last_tid as usize]);
                 }
 
-                if hp_tree.is_some() {
+                if let Some(ref re) = homopolymer_regex {
                     let chrom_seq = fasta
                         .as_ref()
                         .unwrap()
                         .fetch_seq(&chroms[last_tid as usize], 0, i64::MAX as usize)
                         .expect("error fetching sequence from fasta.");
-                    hp_tree = Some(find_homopolymers(
-                        &chrom_seq,
-                        homopolymer_regex.as_ref().unwrap(),
-                    ));
+                    hp_tree = Some(find_homopolymers(&chrom_seq, re));
                 }
             }
 
@@ -474,6 +476,7 @@ fn process_bam(
 fn extract_main(
     paths: Vec<PathBuf>,
     fasta_path: Option<PathBuf>,
+    chromosome: Option<String>,
     output_prefix: PathBuf,
     regions: Option<PathBuf>,
     exclude_regions: Option<PathBuf>,
@@ -507,6 +510,7 @@ fn extract_main(
                 path.clone(),
                 fasta_path.clone(),
                 regions.clone(),
+                chromosome.clone(),
                 exclude_regions.clone(),
                 bin_size,
                 max_read_length,
