@@ -344,8 +344,8 @@ impl Counts {
         bin_size: u32,
         fasta: &Option<faidx::Reader>,
         chrom: N,
-        include_tree: &Option<&Lapper<u32, u32>>,
-        exclude_tree: &Option<&Lapper<u32, u32>>,
+        include_tree: &Option<&Lapper<u32, u8>>,
+        exclude_tree: &Option<&Lapper<u32, u8>>,
         hp_tree: &Option<Lapper<u32, u8>>,
     ) {
         let pieces = overlap_pieces(&a.cigar(), &b.cigar(), false);
@@ -481,100 +481,97 @@ impl Counts {
                     continue;
                 }
 
-                if a_base != b_base {
-                    self.counts.mismatches += 1;
-                    let mut err = ['X', 'X'];
+                self.counts.mismatches += 1;
+                let mut err = ['X', 'X'];
 
-                    let real_base = if self.ibam.is_some() {
-                        let mut base_counts = pile(
-                            self.ibam.as_mut().unwrap(),
-                            a.tid(),
-                            genome_pos,
-                            min_map_qual,
-                            min_base_qual,
+                let real_base = if self.ibam.is_some() {
+                    let mut base_counts = pile(
+                        self.ibam.as_mut().unwrap(),
+                        a.tid(),
+                        genome_pos,
+                        min_map_qual,
+                        min_base_qual,
+                    );
+                    let am = argmax(&base_counts).expect("error selecting maximum index");
+                    // check that the 2nd most common base is very low frequency, otherwise might be a het.
+                    base_counts.sort();
+                    let cmax = base_counts[4];
+                    // if 3nd most common base is more than 50% of first, then we don't know which is right.
+                    if base_counts[3] as f64 / cmax as f64 > 0.5 {
+                        log::debug!(
+                            "skipping due to unknown truth given base_counts {:?}",
+                            base_counts
                         );
-                        let am = argmax(&base_counts).expect("error selecting maximum index");
-                        // check that the 2nd most common base is very low frequency, otherwise might be a het.
-                        base_counts.sort();
-                        let cmax = base_counts[4];
-                        // if 3nd most common base is more than 50% of first, then we don't know which is right.
-                        if base_counts[3] as f64 / cmax as f64 > 0.5 {
-                            log::debug!(
-                                "skipping due to unknown truth given base_counts {:?}",
-                                base_counts
-                            );
-                            continue;
-                        }
-                        ['A', 'C', 'G', 'T', 'N'][am]
-                    } else {
-                        fasta
-                            .as_ref()
-                            .unwrap()
-                            .fetch_seq(&chrom, genome_pos as usize, genome_pos as usize)
-                            .expect("error extracting base")[0] as char
-                    };
-                    if real_base == 'N' {
-                        log::warn!("got 'N' for {chrom:?}:{genome_pos} base skipping");
-                        let pos = Position {
-                            tid: a.tid() as u16,
-                            pos: genome_pos,
-                            // we don't know the bq, but assume it's the min. this very rarely happens so doesn't affect results.
-                            bq_bin: aq.min(bq),
-                        };
-                        let context_idx = a_index[4];
-                        let context_counts =
-                            self.counts.error_positions.entry(pos).or_insert([0; 6]);
-                        context_counts[context_idx] += 1;
                         continue;
                     }
-
-                    let err_index = if a_base == real_base as u8 {
-                        // b is the error
-                        let mut index = b_index;
-                        b_index[4] = a_index[4]; // we correct this because we want to track the true base
-                        index[4] = CONTEXT_LOOKUP[&(a_base, b_base)];
-                        err[0] = a_base as char;
-                        err[1] = b_base as char;
-                        index
-                    } else if b_base == real_base as u8 {
-                        // a is the error
-                        let mut index = a_index;
-                        a_index[4] = b_index[4]; // we correct this because we want to track the true base
-                        index[4] = CONTEXT_LOOKUP[&(b_base, a_base)];
-                        err[0] = b_base as char;
-                        err[1] = a_base as char;
-                        index
-                    } else {
-                        // can't determine which is error base.
-                        let pos = Position {
-                            tid: a.tid() as u16,
-                            pos: genome_pos,
-                            // we don't know the bq, but assume it's the min. this very rarely happens so doesn't affect results.
-                            bq_bin: aq.min(bq),
-                        };
-                        let context_idx = a_index[4];
-                        let context_counts =
-                            self.counts.error_positions.entry(pos).or_insert([0; 6]);
-                        context_counts[context_idx] += 1;
-                        continue;
-                    };
-
+                    ['A', 'C', 'G', 'T', 'N'][am]
+                } else {
+                    fasta
+                        .as_ref()
+                        .unwrap()
+                        .fetch_seq(&chrom, genome_pos as usize, genome_pos as usize)
+                        .expect("error extracting base")[0] as char
+                };
+                if real_base == 'N' {
+                    log::warn!("got 'N' for {chrom:?}:{genome_pos} base skipping");
                     let pos = Position {
                         tid: a.tid() as u16,
                         pos: genome_pos,
-                        bq_bin: err_index[3] as u8,
+                        // we don't know the bq, but assume it's the min. this very rarely happens so doesn't affect results.
+                        bq_bin: aq.min(bq),
                     };
-                    let context_idx = err_index[4];
+                    let context_idx = a_index[4];
                     let context_counts = self.counts.error_positions.entry(pos).or_insert([0; 6]);
                     context_counts[context_idx] += 1;
+                    continue;
+                }
 
-                    let bases = CONTEXT_TO_CONTEXT2[err_index[4]];
-                    self.counts.cnts[a_index] += 1;
-                    self.counts.cnts[b_index] += 1;
+                let err_index = if a_base == real_base as u8 {
+                    // b is the error
+                    let mut index = b_index;
+                    b_index[4] = a_index[4]; // we correct this because we want to track the true base
+                    index[4] = CONTEXT_LOOKUP[&(a_base, b_base)];
+                    err[0] = a_base as char;
+                    err[1] = b_base as char;
+                    index
+                } else if b_base == real_base as u8 {
+                    // a is the error
+                    let mut index = a_index;
+                    a_index[4] = b_index[4]; // we correct this because we want to track the true base
+                    index[4] = CONTEXT_LOOKUP[&(b_base, a_base)];
+                    err[0] = b_base as char;
+                    err[1] = a_base as char;
+                    index
+                } else {
+                    // can't determine which is error base.
+                    let pos = Position {
+                        tid: a.tid() as u16,
+                        pos: genome_pos,
+                        // we don't know the bq, but assume it's the min. this very rarely happens so doesn't affect results.
+                        bq_bin: aq.min(bq),
+                    };
+                    let context_idx = a_index[4];
+                    let context_counts = self.counts.error_positions.entry(pos).or_insert([0; 6]);
+                    context_counts[context_idx] += 1;
+                    continue;
+                };
 
-                    self.counts.errs[err_index] += 1;
+                let pos = Position {
+                    tid: a.tid() as u16,
+                    pos: genome_pos,
+                    bq_bin: err_index[3] as u8,
+                };
+                let context_idx = err_index[4];
+                let context_counts = self.counts.error_positions.entry(pos).or_insert([0; 6]);
+                context_counts[context_idx] += 1;
 
-                    log::debug!(
+                let bases = CONTEXT_TO_CONTEXT2[err_index[4]];
+                self.counts.cnts[a_index] += 1;
+                self.counts.cnts[b_index] += 1;
+
+                self.counts.errs[err_index] += 1;
+
+                log::debug!(
                         "gpos: {}, mm: {}, err:{}->{}, err-index:{:?}, ai: {}, bi: {}, {:?} (check) round-trip-base: {} (was {},{}) {:?}",
                         genome_pos,
                         self.counts.mismatches,
@@ -590,7 +587,6 @@ impl Counts {
                         err[1],
                         fasta,
                     );
-                }
             }
         }
         if self.depth_writer.is_some() {

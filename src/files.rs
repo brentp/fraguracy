@@ -10,6 +10,8 @@ use std::path::PathBuf;
 use rust_htslib::bgzf;
 use std::io::Write;
 
+pub(crate) type Iv = rust_lapper::Interval<u32, u8>;
+
 pub(crate) fn write_stats(stats: Vec<Stat>, output_prefix: PathBuf) {
     let header = Stat::header();
 

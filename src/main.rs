@@ -14,12 +14,11 @@ use homopolymer::find_homopolymers;
 use linear_map::LinearMap;
 use regex::Regex;
 
-use rust_lapper::{Interval, Lapper};
+use rust_lapper::Lapper;
 
 use std::io::BufRead;
 
-type Iv = Interval<u32, u32>;
-
+use crate::files::Iv;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -113,7 +112,7 @@ enum Commands {
         )]
         output_prefix: String,
 
-        #[arg(short, long, help = "restrict analysis to this chromosome")]
+        #[arg(short = 'C', long, help = "restrict analysis to this chromosome")]
         chromosome: Option<String>,
 
         #[arg(
@@ -253,7 +252,7 @@ fn main() -> std::io::Result<()> {
     }
 }
 
-fn read_bed(path: Option<PathBuf>) -> Option<HashMap<String, Lapper<u32, u32>>> {
+fn read_bed(path: Option<PathBuf>) -> Option<HashMap<String, Lapper<u32, u8>>> {
     path.as_ref()?;
 
     let reader = files::open_file(path);
@@ -277,7 +276,7 @@ fn read_bed(path: Option<PathBuf>) -> Option<HashMap<String, Lapper<u32, u32>>> 
             }
         });
 
-    let mut tree: HashMap<String, Lapper<u32, u32>> = HashMap::new();
+    let mut tree: HashMap<String, Lapper<u32, u8>> = HashMap::new();
 
     for (chrom, ivs) in bed.iter() {
         let ivs = ivs.clone();
@@ -288,10 +287,10 @@ fn read_bed(path: Option<PathBuf>) -> Option<HashMap<String, Lapper<u32, u32>>> 
 }
 
 fn get_tree<'a>(
-    regions: &'a Option<HashMap<String, Lapper<u32, u32>>>,
+    regions: &'a Option<HashMap<String, Lapper<u32, u8>>>,
     chrom: &String,
-) -> Option<&'a Lapper<u32, u32>> {
-    let tree: Option<&Lapper<u32, u32>> = if let Some(r) = regions {
+) -> Option<&'a Lapper<u32, u8>> {
+    let tree: Option<&Lapper<u32, u8>> = if let Some(r) = regions {
         r.get(chrom)
     } else {
         None
@@ -366,6 +365,8 @@ fn process_bam(
         } else {
             log::info!("limiting analysis to chromosome: \"{chromosome}");
         }
+    } else if let Err(e) = bam.fetch(bam::FetchDefinition::All) {
+        log::error!("error fetching all reads: {e}");
     }
 
     let mut n_total = 0;
@@ -377,8 +378,8 @@ fn process_bam(
         .map(|n| unsafe { str::from_utf8_unchecked(n) }.to_string())
         .collect();
 
-    let mut include_tree: Option<&Lapper<u32, u32>> = get_tree(&include_regions, &chroms[0]);
-    let mut exclude_tree: Option<&Lapper<u32, u32>> = get_tree(&exclude_regions, &chroms[0]);
+    let mut include_tree: Option<&Lapper<u32, u8>> = get_tree(&include_regions, &chroms[0]);
+    let mut exclude_tree: Option<&Lapper<u32, u8>> = get_tree(&exclude_regions, &chroms[0]);
     let mut hp_tree: Option<Lapper<u32, u8>> = None;
 
     let mut last_tid: i32 = -1;

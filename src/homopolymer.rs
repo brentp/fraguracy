@@ -42,7 +42,7 @@ pub(crate) fn hp_distance(
         if hp.stop >= read_start && hp.stop < read_start + 3 {
             continue;
         }
-        if hp.start < read_stop && hp.start > read_stop - 3 {
+        if hp.start <= read_stop && hp.start > read_stop - 3 {
             continue;
         }
 
