@@ -1,4 +1,5 @@
 use bpci::*;
+use coitrees::{BasicCOITree, IntervalTree};
 use ndarray::prelude::Array;
 use ndarray::Array6;
 use rust_htslib::{
@@ -9,7 +10,6 @@ use rust_htslib::{
     bgzf::CompressionLevel,
 };
 use rust_htslib::{bgzf, faidx};
-use rust_lapper::Lapper;
 use std::collections::BTreeMap;
 
 use crate::homopolymer as hp;
@@ -30,7 +30,7 @@ pub(crate) struct Position {
 /// DepthMap is for a given genome position, the depth at each (aq, bq) pair.
 type DepthMap = HashMap<(u8, u8), u32>;
 
-pub(crate) const MAX_HP_DIST: i8 = 15;
+pub(crate) const MAX_HP_DIST: i8 = 20;
 
 pub(crate) struct Counts {
     pub(crate) ibam: Option<IndexedReader>,
@@ -344,9 +344,9 @@ impl Counts {
         bin_size: u32,
         fasta: &Option<faidx::Reader>,
         chrom: N,
-        include_tree: &Option<&Lapper<u32, u8>>,
-        exclude_tree: &Option<&Lapper<u32, u8>>,
-        hp_tree: &Option<Lapper<u32, u8>>,
+        include_tree: &Option<&BasicCOITree<u32, u32>>,
+        exclude_tree: &Option<&BasicCOITree<u32, u32>>,
+        hp_tree: &Option<BasicCOITree<u32, u32>>,
     ) {
         let pieces = overlap_pieces(&a.cigar(), &b.cigar(), false);
         if pieces.is_empty() {
@@ -376,7 +376,11 @@ impl Counts {
         for [a_chunk, b_chunk, g_chunk] in pieces {
             let g_start = g_chunk.start.max(MAX_HP_DIST as u32) - MAX_HP_DIST as u32;
             let g_stop = g_chunk.stop + MAX_HP_DIST as u32;
-            let hps: Option<Vec<_>> = hp_tree.as_ref().map(|t| t.find(g_start, g_stop).collect());
+            let mut m = Vec::new();
+            hp_tree
+                .as_ref()
+                .map(|t| t.query(g_start as i32, g_stop as i32, |i| m.push(i.clone())));
+            let hps = Some(m);
 
             for (ai, bi) in std::iter::zip(a_chunk.start..a_chunk.stop, b_chunk.start..b_chunk.stop)
             {
@@ -402,12 +406,12 @@ impl Counts {
                 }
 
                 if let Some(t) = include_tree {
-                    if t.count(genome_pos, genome_pos + 1) == 0 {
+                    if t.query_count(genome_pos as i32, genome_pos as i32 + 1) == 0 {
                         continue;
                     }
                 }
                 if let Some(t) = exclude_tree {
-                    if t.count(genome_pos, genome_pos + 1) != 0 {
+                    if t.query_count(genome_pos as i32, genome_pos as i32 + 1) > 0 {
                         continue;
                     }
                 }

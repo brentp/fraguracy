@@ -23,6 +23,7 @@ flate2 = "1.0.25"
 bpci = "0.1.0"
 clap = {version ="4.5.20", features=["derive"]}
 regex = "1.11.1"
+coitrees = "0.4.0"
 #plotly = "0.8.3"
 #polars = { version = "0.27.2", features = ["lazy", "strings"] }
 

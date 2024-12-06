@@ -14,11 +14,10 @@ use homopolymer::find_homopolymers;
 use linear_map::LinearMap;
 use regex::Regex;
 
-use rust_lapper::Lapper;
+use coitrees::{BasicCOITree, IntervalNode, IntervalTree};
 
 use std::io::BufRead;
 
-use crate::files::Iv;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -205,7 +204,7 @@ fn get_sample_name(hmap: HashMap<String, Vec<LinearMap<String, String>>>) -> Str
 fn main() -> std::io::Result<()> {
     let args = Cli::parse();
     if env::var("RUST_LOG").is_err() {
-        env::set_var("RUST_LOG", "info")
+        unsafe { env::set_var("RUST_LOG", "info") }
     }
     env_logger::init();
 
@@ -252,12 +251,12 @@ fn main() -> std::io::Result<()> {
     }
 }
 
-fn read_bed(path: Option<PathBuf>) -> Option<HashMap<String, Lapper<u32, u8>>> {
+fn read_bed(path: Option<PathBuf>) -> Option<HashMap<String, BasicCOITree<u32, u32>>> {
     path.as_ref()?;
 
     let reader = files::open_file(path);
     reader.as_ref()?;
-    let mut bed = HashMap::new();
+    let mut intervals: HashMap<String, Vec<IntervalNode<u32, u32>>> = HashMap::new();
 
     reader
         .expect("checked that reader is available")
@@ -266,36 +265,27 @@ fn read_bed(path: Option<PathBuf>) -> Option<HashMap<String, Lapper<u32, u8>>> {
             let line = l.expect("error reading line");
             let fields: Vec<_> = line.split('\t').collect();
             if let (Ok(start), Ok(stop)) = (fields[1].parse::<u32>(), fields[2].parse::<u32>()) {
-                let iv = Iv {
-                    start,
-                    stop,
-                    val: 0,
-                };
+                let iv = IntervalNode::new(start as i32, stop as i32, 0);
                 let chrom = String::from(fields[0]);
-                bed.entry(chrom).or_insert(Vec::new()).push(iv);
+                intervals.entry(chrom).or_insert(Vec::new()).push(iv);
             }
         });
 
-    let mut tree: HashMap<String, Lapper<u32, u8>> = HashMap::new();
+    let mut trees: HashMap<String, BasicCOITree<u32, u32>> = HashMap::new();
 
-    for (chrom, ivs) in bed.iter() {
-        let ivs = ivs.clone();
-        let chrom = (*chrom).clone();
-        tree.insert(chrom, Lapper::new(ivs));
+    for (chrom, ivs) in intervals {
+        // coitrees requires sorted intervals
+        //ivs.sort_by_key(|i| (i.start, i.stop));
+        trees.insert(chrom, BasicCOITree::new(&ivs));
     }
-    Some(tree)
+    Some(trees)
 }
 
 fn get_tree<'a>(
-    regions: &'a Option<HashMap<String, Lapper<u32, u8>>>,
+    regions: &'a Option<HashMap<String, BasicCOITree<u32, u32>>>,
     chrom: &String,
-) -> Option<&'a Lapper<u32, u8>> {
-    let tree: Option<&Lapper<u32, u8>> = if let Some(r) = regions {
-        r.get(chrom)
-    } else {
-        None
-    };
-    tree
+) -> Option<&'a BasicCOITree<u32, u32>> {
+    regions.as_ref().and_then(|r| r.get(chrom))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -378,9 +368,9 @@ fn process_bam(
         .map(|n| unsafe { str::from_utf8_unchecked(n) }.to_string())
         .collect();
 
-    let mut include_tree: Option<&Lapper<u32, u8>> = get_tree(&include_regions, &chroms[0]);
-    let mut exclude_tree: Option<&Lapper<u32, u8>> = get_tree(&exclude_regions, &chroms[0]);
-    let mut hp_tree: Option<Lapper<u32, u8>> = None;
+    let mut include_tree: Option<&BasicCOITree<u32, u32>> = get_tree(&include_regions, &chroms[0]);
+    let mut exclude_tree: Option<&BasicCOITree<u32, u32>> = get_tree(&exclude_regions, &chroms[0]);
+    let mut hp_tree: Option<BasicCOITree<u32, u32>> = None;
 
     let mut last_tid: i32 = -1;
     bam.rc_records()
