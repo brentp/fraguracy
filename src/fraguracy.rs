@@ -30,7 +30,7 @@ pub(crate) struct Position {
 /// DepthMap is for a given genome position, the depth at each (aq, bq) pair.
 type DepthMap = HashMap<(u8, u8), u32>;
 
-pub(crate) const MAX_HP_DIST: i8 = 15;
+pub(crate) const MAX_HP_DIST: i8 = 44;
 
 pub(crate) struct Counts {
     pub(crate) ibam: Option<IndexedReader>,
@@ -371,8 +371,20 @@ impl Counts {
         let a_qual = a.qual();
         let b_qual = b.qual();
 
-        let mut genome_pos = u32::MAX;
+        let indel_errors =
+            indel_error_pieces(&a.cigar(), &b.cigar(), a_qual, b_qual, min_base_qual);
+        indel_errors.iter().for_each(|c: &Coordinates| {
+            for p in c.start..c.stop {
+                let p = Position {
+                    tid: a.tid() as u16,
+                    pos: p,
+                    bq_bin: 1,
+                };
+                *self.counts.indel_error_positions.entry(p).or_insert(0) += 1;
+            }
+        });
 
+        let mut genome_pos = u32::MAX;
         for [a_chunk, b_chunk, g_chunk] in pieces {
             let g_start = g_chunk.start.max(MAX_HP_DIST as u32) - MAX_HP_DIST as u32;
             let g_stop = g_chunk.stop + MAX_HP_DIST as u32;
@@ -411,19 +423,6 @@ impl Counts {
                         continue;
                     }
                 }
-
-                let indel_errors =
-                    indel_error_pieces(&a.cigar(), &b.cigar(), a.qual(), b.qual(), min_base_qual);
-                indel_errors.iter().for_each(|c: &Coordinates| {
-                    for p in c.start..c.stop {
-                        let p = Position {
-                            tid: a.tid() as u16,
-                            pos: p,
-                            bq_bin: 1,
-                        };
-                        *self.counts.indel_error_positions.entry(p).or_insert(0) += 1;
-                    }
-                });
 
                 let a_base = unsafe { a_seq.decoded_base_unchecked(ai as usize) };
                 let b_base = unsafe { b_seq.decoded_base_unchecked(bi as usize) };
