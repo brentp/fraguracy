@@ -564,28 +564,22 @@ impl Counts {
                 let context_counts = self.counts.error_positions.entry(pos).or_insert([0; 6]);
                 context_counts[context_idx] += 1;
 
-                let bases = CONTEXT_TO_CONTEXT2[err_index[4]];
                 self.counts.cnts[a_index] += 1;
                 self.counts.cnts[b_index] += 1;
 
                 self.counts.errs[err_index] += 1;
 
                 log::debug!(
-                        "gpos: {}, mm: {}, err:{}->{}, err-index:{:?}, ai: {}, bi: {}, {:?} (check) round-trip-base: {} (was {},{}) {:?}",
-                        genome_pos,
-                        self.counts.mismatches,
-                        /* base_counts, */
-                        err[0],
-                        err[1],
-                        err_index,
-                        ai,
-                        bi,
-                        unsafe { str::from_utf8_unchecked(a.qname()) },
-                        bases[0],
-                        err[0],
-                        err[1],
-                        fasta,
-                    );
+                    "gpos:{}, err:{}->{}, err-index:{:?}, ai:{}, bi:{}, {:?}",
+                    genome_pos,
+                    /* base_counts, */
+                    err[0],
+                    err[1],
+                    err_index,
+                    ai,
+                    bi,
+                    unsafe { str::from_utf8_unchecked(a.qname()) },
+                );
             }
         }
         if self.depth_writer.is_some() {
