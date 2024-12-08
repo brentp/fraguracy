@@ -30,7 +30,7 @@ pub(crate) struct Position {
 /// DepthMap is for a given genome position, the depth at each (aq, bq) pair.
 type DepthMap = HashMap<(u8, u8), u32>;
 
-pub(crate) const MAX_HP_DIST: i8 = 44;
+pub(crate) const MAX_HP_DIST: i8 = 15;
 
 pub(crate) struct Counts {
     pub(crate) ibam: Option<IndexedReader>,
@@ -348,7 +348,7 @@ impl Counts {
         exclude_tree: &Option<&Lapper<u32, u8>>,
         hp_tree: &Option<Lapper<u32, u8>>,
     ) {
-        let pieces = overlap_pieces(&a.cigar(), &b.cigar(), false);
+        let pieces = overlap_pieces(&a.cigar(), &b.cigar(), true);
         if pieces.is_empty() {
             return;
         }
@@ -832,6 +832,7 @@ fn overlap_pieces(
     if aend <= b.pos() || bend <= a.pos() {
         return vec![];
     }
+
     let mut result: Vec<[Coordinates; 3]> = Vec::new();
     let mut ai: usize = 0;
     let mut bi: usize = 0;
