@@ -490,7 +490,7 @@ fn extract_main(
     homopolymer_regex: String,
 ) -> std::io::Result<()> {
     //let args: Vec<String> = env::args().collect();
-    let min_base_qual = 20u8;
+    let min_base_qual = 5u8;
 
     let mut homopolymer_regex =
         Some(Regex::new(&homopolymer_regex).expect("error compiling homopolymer regex"));

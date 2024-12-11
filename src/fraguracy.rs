@@ -251,7 +251,7 @@ impl Counts {
         match b as char {
             'A' | 'T' => 0,
             'C' | 'G' => 1,
-            _ => unreachable!(),
+            n => unreachable!("base_to_ctx2: {n}"),
         }
     }
 
@@ -383,12 +383,25 @@ impl Counts {
                 *self.counts.indel_error_positions.entry(p).or_insert(0) += 1;
             }
         });
+        if log::log_enabled!(log::Level::Debug) && unsafe { str::from_utf8_unchecked(a.qname()) } == "A00744:46:HV3C3DSXX:2:2611:30798:35258" {
+            log::debug!("pieces: {:?}", pieces);
+        }
 
         let mut genome_pos = u32::MAX;
         for [a_chunk, b_chunk, g_chunk] in pieces {
-            let g_start = g_chunk.start.max(MAX_HP_DIST as u32) - MAX_HP_DIST as u32;
-            let g_stop = g_chunk.stop + MAX_HP_DIST as u32;
-            let hps: Option<Vec<_>> = hp_tree.as_ref().map(|t| t.find(g_start, g_stop).collect());
+            // we want to limit to the bounds of the read. since homopolymers outside of the read won't affect it.
+            let eps = 1;
+            let g_start = (g_chunk.start.max(MAX_HP_DIST as u32) - MAX_HP_DIST as u32)
+                .max(a.pos() as u32 + eps)
+                .max(b.pos() as u32 + eps);
+            let g_stop = (g_chunk.stop + MAX_HP_DIST as u32)
+                .min(a.cigar().end_pos() as u32 - eps)
+                .min(b.cigar().end_pos() as u32 - eps);
+            let hps: Option<Vec<_>> = if g_start <= g_stop {
+                hp_tree.as_ref().map(|t| t.find(g_start, g_stop).collect())
+            } else {
+                None
+            };
 
             for (ai, bi) in std::iter::zip(a_chunk.start..a_chunk.stop, b_chunk.start..b_chunk.stop)
             {
@@ -568,18 +581,19 @@ impl Counts {
                 self.counts.cnts[b_index] += 1;
 
                 self.counts.errs[err_index] += 1;
-
-                log::debug!(
-                    "gpos:{}, err:{}->{}, err-index:{:?}, ai:{}, bi:{}, {:?}",
-                    genome_pos,
-                    /* base_counts, */
-                    err[0],
-                    err[1],
-                    err_index,
-                    ai,
-                    bi,
-                    unsafe { str::from_utf8_unchecked(a.qname()) },
-                );
+                if log::log_enabled!(log::Level::Debug) && unsafe { str::from_utf8_unchecked(a.qname()) } == "A00744:46:HV3C3DSXX:2:2611:30798:35258" {
+                    log::debug!(
+                        "gpos:{}, err:{}->{}, err-index:{:?}, ai:{}, bi:{}, {:?}",
+                        genome_pos,
+                        /* base_counts, */
+                        err[0],
+                        err[1],
+                        err_index,
+                        ai,
+                        bi,
+                        unsafe { str::from_utf8_unchecked(a.qname()) },
+                    );
+                }
             }
         }
         if self.depth_writer.is_some() {
@@ -924,13 +938,13 @@ mod tests {
     fn test_different_alignments() {
         let a = CigarString(vec![Cigar::Match(5), Cigar::Ins(3), Cigar::Match(5)]).into_view(0);
         let b = CigarString(vec![Cigar::Match(13)]).into_view(0);
-        let r = overlap_pieces(&a, &b, false);
+        let r = overlap_pieces(&a, &b, true);
         dbg!(&r);
     }
 
     #[test]
     fn test_same_insertion() {
-        let a = CigarString(vec![Cigar::Match(10), Cigar::Ins(8), Cigar::Match(10)]).into_view(8);
+        let a = CigarString(vec![Cigar::Match(10), Cigar::Ins(8), Cigar::Match(10)]).into_view(5);
         let b = CigarString(vec![Cigar::Match(10), Cigar::Ins(8), Cigar::Match(10)]).into_view(5);
         let r = overlap_pieces(&a, &b, false);
         dbg!(&r);
