@@ -28,8 +28,8 @@ pub(crate) fn hp_distance(
     read_start: u32,
     read_stop: u32,
     _strand: i8,
-) -> Option<i8> {
-    let mut dist: Option<i8> = None;
+) -> Option<i16> {
+    let mut dist: Option<i16> = None;
     // strand will be 1 for forward, -1 for reverse
     for hp in hps.map(|hps| hps.iter()).unwrap_or_default() {
         // first we check if the hp is within 3 bases of the read start or stop.
@@ -60,7 +60,7 @@ pub(crate) fn hp_distance(
             continue;
         }
 
-        let d = d as i8;
+        let d = d as i16;
         if dist.is_none() || d.abs() < dist.unwrap().abs() {
             dist = Some(d);
         }
@@ -121,6 +121,15 @@ mod tests {
         assert_eq!(hp_distance(Some(&hp_refs), 15, 5, 20, -1,), Some(-3));
 
         // Test distant homopolymer
-        assert_eq!(hp_distance(Some(&hp_refs), 115, 105, 120, 1,), None);
+        assert_eq!(
+            hp_distance(
+                Some(&hp_refs),
+                115 + crate::fraguracy::MAX_HP_DIST as u32,
+                105 + crate::fraguracy::MAX_HP_DIST as u32,
+                120 + crate::fraguracy::MAX_HP_DIST as u32,
+                1,
+            ),
+            None
+        );
     }
 }

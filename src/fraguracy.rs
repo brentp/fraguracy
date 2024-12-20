@@ -30,7 +30,7 @@ pub(crate) struct Position {
 /// DepthMap is for a given genome position, the depth at each (aq, bq) pair.
 type DepthMap = HashMap<(u8, u8), u32>;
 
-pub(crate) const MAX_HP_DIST: i8 = 15;
+pub(crate) const MAX_HP_DIST: i16 = 127;
 
 pub(crate) struct Counts {
     pub(crate) ibam: Option<IndexedReader>,
@@ -85,7 +85,7 @@ pub(crate) struct Stat {
     bq_bin: u8,
     read_pos: u8,
     context: [char; 2],
-    homopolymer_distance: i8,
+    homopolymer_distance: i16,
     total_count: u64,
     error_count: u64,
 }
@@ -190,7 +190,7 @@ impl Stat {
                                     context: bases,
                                     total_count: n_tot,
                                     error_count: n_err,
-                                    homopolymer_distance: hp_dist as i8 - MAX_HP_DIST,
+                                    homopolymer_distance: hp_dist as i16 - MAX_HP_DIST,
                                 })
                             }
                         }
@@ -383,7 +383,10 @@ impl Counts {
                 *self.counts.indel_error_positions.entry(p).or_insert(0) += 1;
             }
         });
-        if log::log_enabled!(log::Level::Debug) && unsafe { str::from_utf8_unchecked(a.qname()) } == "A00744:46:HV3C3DSXX:2:2611:30798:35258" {
+        if log::log_enabled!(log::Level::Debug)
+            && unsafe { str::from_utf8_unchecked(a.qname()) }
+                == "A00744:46:HV3C3DSXX:2:2611:30798:35258"
+        {
             log::debug!("pieces: {:?}", pieces);
         }
 
@@ -581,7 +584,10 @@ impl Counts {
                 self.counts.cnts[b_index] += 1;
 
                 self.counts.errs[err_index] += 1;
-                if log::log_enabled!(log::Level::Debug) && unsafe { str::from_utf8_unchecked(a.qname()) } == "A00744:46:HV3C3DSXX:2:2611:30798:35258" {
+                if log::log_enabled!(log::Level::Debug)
+                    && unsafe { str::from_utf8_unchecked(a.qname()) }
+                        == "A00744:46:HV3C3DSXX:2:2611:30798:35258"
+                {
                     log::debug!(
                         "gpos:{}, err:{}->{}, err-index:{:?}, ai:{}, bi:{}, {:?}",
                         genome_pos,
