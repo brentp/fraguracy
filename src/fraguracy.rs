@@ -30,7 +30,7 @@ pub(crate) struct Position {
 /// DepthMap is for a given genome position, the depth at each (aq, bq) pair.
 type DepthMap = HashMap<(u8, u8), u32>;
 
-pub(crate) const MAX_HP_DIST: i16 = 127;
+pub(crate) const MAX_HP_DIST: i16 = 15;
 
 pub(crate) struct Counts {
     pub(crate) ibam: Option<IndexedReader>,
