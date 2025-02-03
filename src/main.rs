@@ -34,6 +34,10 @@ use crate::fraguracy::Stat;
 use std::env;
 use std::str;
 
+lazy_static! {
+    static ref EMPTY_LAPPER: Lapper<u32, u8> = Lapper::new(Vec::new());
+}
+
 #[derive(Debug, Parser)]
 #[command(name = "fraguracy")]
 #[command(
@@ -290,12 +294,11 @@ fn get_tree<'a>(
     regions: &'a Option<HashMap<String, Lapper<u32, u8>>>,
     chrom: &String,
 ) -> Option<&'a Lapper<u32, u8>> {
-    let tree: Option<&Lapper<u32, u8>> = if let Some(r) = regions {
-        r.get(chrom)
+    if let Some(map) = regions {
+        Some(map.get(chrom).unwrap_or(&EMPTY_LAPPER))
     } else {
         None
-    };
-    tree
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -553,4 +556,63 @@ fn extract_main(
         files::write_errors(&total_counts, output_prefix, chroms);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+    // Assuming Iv is defined in crate::files and is accessible.
+    use crate::files::Iv;
+
+    #[test]
+    fn test_get_tree_found() {
+        // Create a non-empty lapper for "chr1"
+        let iv = Iv {
+            start: 10,
+            stop: 20,
+            val: 0,
+        };
+        let lapper_non_empty = Lapper::new(vec![iv]);
+        let mut regions_map: HashMap<String, Lapper<u32, u8>> = HashMap::new();
+        regions_map.insert("chr1".to_string(), lapper_non_empty);
+        let regions = Some(regions_map);
+
+        let tree = get_tree(&regions, &"chr1".to_string()).unwrap();
+        // Query a point that should overlap the interval [10,20]
+        let mut iter = tree.find(15, 16);
+        assert!(
+            iter.next().is_some(),
+            "Expected to find an interval for chr1"
+        );
+    }
+
+    #[test]
+    fn test_get_tree_not_found_in_map() {
+        // Create a regions map with a lapper only for "chr1"
+        let iv = Iv {
+            start: 10,
+            stop: 20,
+            val: 0,
+        };
+        let lapper_non_empty = Lapper::new(vec![iv]);
+        let mut regions_map: HashMap<String, Lapper<u32, u8>> = HashMap::new();
+        regions_map.insert("chr1".to_string(), lapper_non_empty);
+        let regions = Some(regions_map);
+
+        // Looking up "chr2" should yield the empty lapper.
+        let tree = get_tree(&regions, &"chr2".to_string()).unwrap();
+        assert!(
+            tree.find(0, 100).next().is_none(),
+            "Expected empty lapper for non-existent chromosome"
+        );
+    }
+
+    #[test]
+    fn test_get_tree_no_regions() {
+        // When regions is None, we expect the function to return None.
+        let regions: Option<HashMap<String, Lapper<u32, u8>>> = None;
+        let tree = get_tree(&regions, &"any".to_string());
+        assert!(tree.is_none(), "Expected None when regions is None");
+    }
 }
