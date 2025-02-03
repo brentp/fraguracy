@@ -135,7 +135,7 @@ enum Commands {
             default_value_t = 151,
             help = "indicate the maximum read length in the alignment file"
         )]
-        max_read_length: u8,
+        max_read_length: u32,
         #[arg(
             short,
             long,
@@ -232,7 +232,7 @@ fn main() -> std::io::Result<()> {
             regions,
             exclude_regions,
             bin_size as u32,
-            max_read_length as u32,
+            max_read_length,
             min_mapping_quality,
             ci,
             reference_as_truth,
