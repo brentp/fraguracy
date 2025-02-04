@@ -1,3 +1,6 @@
+# v0.2.5
++ respect include and exclude for indels and denominator calculation (thanks Jason for reporting)
+
 # v0.2.4
 + Allow chromosomes longer than u8::MAX (#11 thanks @pontushojer for reporting)
 + Fix: when an include region was given and a non-seen chromosome was queried, it would return all intervals in that chromosome (#10 thanks Jason)
