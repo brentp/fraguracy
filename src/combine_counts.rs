@@ -8,7 +8,7 @@ use std::string::String;
 pub(crate) struct Count {
     read12: u8,
     orientation: u8,
-    read_pos: u8,
+    read_pos: u32,
     bq_bin: u8,
     context: [char; 2],
     homopolymer_dist: i8,
