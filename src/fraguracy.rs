@@ -84,7 +84,7 @@ pub(crate) struct Stat {
     fr: u8,
     bq_bin: u8,
     read_pos: u32,
-    context: [chr; 2],
+    context: [char; 2],
     homopolymer_distance: i16,
     total_count: u64,
     error_count: u64,
