@@ -46,7 +46,7 @@ impl Count {
             read_pos: sp
                 .next()
                 .expect("not enough columns in line {s}")
-                .parse::<u8>()
+                .parse::<u32>()
                 .expect("error parsing int"),
             context: {
                 let mut ctx = sp
