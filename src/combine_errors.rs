@@ -20,7 +20,7 @@ struct Interval {
     start: u32,
     end: u32,
     group: u8,
-    count: [u32; 6],
+    count: [u32; 7],
     file_i: u32,
 }
 struct IntervalHeap {
@@ -66,8 +66,8 @@ impl Add<&Interval> for &Interval {
             .iter()
             .zip(other.count.iter())
             .map(|(a, b)| a + b);
-        // convert counts to [u32, 6]
-        let counts: [u32; 6] = counts
+        // convert counts to [u32, 7]
+        let counts: [u32; 7] = counts
             .collect::<Vec<_>>()
             .try_into()
             .expect("error converting counts");
@@ -127,14 +127,14 @@ fn parse_bed_line(
             group: (*fraguracy::REVERSE_Q_LOOKUP
                 .get(toks[3].trim())
                 .unwrap_or_else(|| panic!("unknown bq bin: {}", toks[3]))),
-            count: [0; 6],
+            count: [0; 7],
 
             file_i,
         };
         // toks[4] is the total count, which we don't need. because we can sum the count from toks[5]
 
         // parse the counts which appear as, e.g.,
-        // AC:1,AG:2,AT:3,CG:4,CT:5,GT:6
+        // AC:1,AG:2,AT:3,CG:4,CT:5,GT:6,NN:0
         // and increment the appropriate index using CONTEXT_LOOKUP from fraguracy.rs
         for s in toks[5].split(',') {
             let (context, count) = s.split(':').collect_tuple().unwrap();
@@ -158,7 +158,7 @@ fn parse_bed_line(
             start: str::parse::<u32>(toks[1])?,
             end: str::parse::<u32>(toks[2])?,
             group: u8::MAX,
-            count: [0; 6],
+            count: [0; 7],
             file_i,
         };
         // store the count in the first position for indels.

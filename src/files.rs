@@ -30,7 +30,7 @@ pub(crate) fn write_stats(stats: Vec<Stat>, output_prefix: PathBuf) {
         .for_each(|s| writeln!(fh, "{s}").expect("error writing to file"));
 }
 
-pub(crate) fn format_context_counts(counts: [u32; 6]) -> (u32, String) {
+pub(crate) fn format_context_counts(counts: [u32; 7]) -> (u32, String) {
     let mut total: u32 = 0;
     let contexts: String = counts
         .iter()
@@ -139,27 +139,33 @@ mod tests {
     #[test]
     fn test_format_context_counts() {
         // Test case 1: All counts are non-zero
-        let counts1 = [1, 2, 3, 4, 5, 6];
+        let counts1 = [1, 2, 3, 4, 5, 6, 0];
         let (total1, contexts1) = format_context_counts(counts1);
         assert_eq!(total1, 21);
         assert_eq!(contexts1, "AC:1,AG:2,AT:3,CA:4,CG:5,CT:6");
 
         // Test case 2: Some counts are zero
-        let counts2 = [0, 2, 0, 4, 0, 6];
+        let counts2 = [0, 2, 0, 4, 0, 6, 0];
         let (total2, contexts2) = format_context_counts(counts2);
         assert_eq!(total2, 12);
         assert_eq!(contexts2, "AG:2,CA:4,CT:6");
 
         // Test case 3: All counts are zero
-        let counts3 = [0, 0, 0, 0, 0, 0];
+        let counts3 = [0, 0, 0, 0, 0, 0, 0];
         let (total3, contexts3) = format_context_counts(counts3);
         assert_eq!(total3, 0);
         assert_eq!(contexts3, "");
 
         // Test case 4: Only one non-zero count
-        let counts4 = [0, 0, 0, 0, 5, 0];
+        let counts4 = [0, 0, 0, 0, 5, 0, 0];
         let (total4, contexts4) = format_context_counts(counts4);
         assert_eq!(total4, 5);
         assert_eq!(contexts4, "CG:5");
+
+        // Test case 5: Only N has a count
+        let counts5 = [0, 0, 0, 0, 0, 0, 1];
+        let (total5, contexts5) = format_context_counts(counts5);
+        assert_eq!(total5, 1);
+        assert_eq!(contexts5, "NN:1");
     }
 }

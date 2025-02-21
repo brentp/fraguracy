@@ -50,7 +50,7 @@ pub(crate) struct InnerCounts {
     pub(crate) matches: u64,
 
     // position -> error count. nice to find sites that are error-prone.
-    pub(crate) error_positions: HashMap<Position, [u32; 6]>,
+    pub(crate) error_positions: HashMap<Position, [u32; 7]>,
     // position -> indel error counts
     pub(crate) indel_error_positions: HashMap<Position, u32>,
 }
@@ -67,8 +67,8 @@ impl std::ops::AddAssign<InnerCounts> for InnerCounts {
         self.matches += o.matches;
 
         for (pos, cnt) in o.error_positions.into_iter() {
-            let entry = self.error_positions.entry(pos).or_insert([0; 6]);
-            for i in 0..6 {
+            let entry = self.error_positions.entry(pos).or_insert([0; 7]);
+            for i in 0..entry.len() {
                 entry[i] += cnt[i];
             }
         }
@@ -251,6 +251,7 @@ impl Counts {
         match b as char {
             'A' | 'T' => 0,
             'C' | 'G' => 1,
+            'N' => 2,
             n => unreachable!("base_to_ctx2: {n}"),
         }
     }
@@ -374,6 +375,19 @@ impl Counts {
         let indel_errors =
             indel_error_pieces(&a.cigar(), &b.cigar(), a_qual, b_qual, min_base_qual);
         indel_errors.iter().for_each(|c: &Coordinates| {
+            // include the event if any of it overlaps with the include tree.
+            if let Some(t) = include_tree {
+                if t.count(c.start, c.stop) == 0 {
+                    return;
+                }
+            }
+            // exclude the event if any of it overlaps with the exclude tree.
+            if let Some(t) = exclude_tree {
+                if t.count(c.start, c.stop) != 0 {
+                    return;
+                }
+            }
+
             for p in c.start..c.stop {
                 let p = Position {
                     tid: a.tid() as u16,
@@ -417,17 +431,6 @@ impl Counts {
                     continue;
                 }
                 genome_pos = g_chunk.start + (ai - a_chunk.start);
-                let aq = Counts::qual_to_bin(aq);
-                let bq = Counts::qual_to_bin(bq);
-
-                if self.depth_writer.is_some() {
-                    self.depth
-                        .entry(genome_pos)
-                        .or_default()
-                        .entry((aq, bq))
-                        .and_modify(|v| *v += 1)
-                        .or_insert(1);
-                }
 
                 if let Some(t) = include_tree {
                     if t.count(genome_pos, genome_pos + 1) == 0 {
@@ -438,6 +441,18 @@ impl Counts {
                     if t.count(genome_pos, genome_pos + 1) != 0 {
                         continue;
                     }
+                }
+
+                let aq = Counts::qual_to_bin(aq);
+                let bq = Counts::qual_to_bin(bq);
+
+                if self.depth_writer.is_some() {
+                    self.depth
+                        .entry(genome_pos)
+                        .or_default()
+                        .entry((aq, bq))
+                        .and_modify(|v| *v += 1)
+                        .or_insert(1);
                 }
 
                 let a_base = unsafe { a_seq.decoded_base_unchecked(ai as usize) };
@@ -514,8 +529,10 @@ impl Counts {
                     // if 3nd most common base is more than 50% of first, then we don't know which is right.
                     if base_counts[3] as f64 / cmax as f64 > 0.5 {
                         log::debug!(
-                            "skipping due to unknown truth given base_counts {:?}",
-                            base_counts
+                            "skipping due to unknown truth given base_counts {:?} at pos:{}:{}",
+                            base_counts,
+                            chrom.as_ref(),
+                            genome_pos
                         );
                         continue;
                     }
@@ -535,9 +552,8 @@ impl Counts {
                         // we don't know the bq, but assume it's the min. this very rarely happens so doesn't affect results.
                         bq_bin: aq.min(bq),
                     };
-                    let context_idx = a_index[4];
-                    let context_counts = self.counts.error_positions.entry(pos).or_insert([0; 6]);
-                    context_counts[context_idx] += 1;
+                    let context_counts = self.counts.error_positions.entry(pos).or_insert([0; 7]);
+                    context_counts[6] += 1;
                     continue;
                 }
 
@@ -565,9 +581,13 @@ impl Counts {
                         // we don't know the bq, but assume it's the min. this very rarely happens so doesn't affect results.
                         bq_bin: aq.min(bq),
                     };
-                    let context_idx = a_index[4];
-                    let context_counts = self.counts.error_positions.entry(pos).or_insert([0; 6]);
-                    context_counts[context_idx] += 1;
+                    log::debug!(
+                        "bases mismatches between reads and neither matches reference at pos:{}:{}. adding N",
+                        chrom.as_ref(),
+                        genome_pos
+                    );
+                    let context_counts = self.counts.error_positions.entry(pos).or_insert([0; 7]);
+                    context_counts[6] += 1;
                     continue;
                 };
 
@@ -577,7 +597,7 @@ impl Counts {
                     bq_bin: err_index[3] as u8,
                 };
                 let context_idx = err_index[4];
-                let context_counts = self.counts.error_positions.entry(pos).or_insert([0; 6]);
+                let context_counts = self.counts.error_positions.entry(pos).or_insert([0; 7]);
                 context_counts[context_idx] += 1;
 
                 self.counts.cnts[a_index] += 1;
@@ -669,14 +689,16 @@ lazy_static! {
         ((b'G', b'C'), 4usize),
         ((b'C', b'T'), 5usize),
         ((b'G', b'A'), 5usize),
+        ((b'N', b'N'), 6usize),
     ]);
-    pub(crate) static ref CONTEXT_TO_CONTEXT2: [[char; 2]; 6] = [
+    pub(crate) static ref CONTEXT_TO_CONTEXT2: [[char; 2]; 7] = [
         ['A', 'C'],
         ['A', 'G'],
         ['A', 'T'],
         ['C', 'A'],
         ['C', 'G'],
-        ['C', 'T']
+        ['C', 'T'],
+        ['N', 'N'],
     ];
     pub(crate) static ref Q_LOOKUP: [&'static str; 5] = ["0-5", "05-19", "20-36", "37-59", "60+"];
     pub(crate) static ref REVERSE_Q_LOOKUP: HashMap<&'static str, u8> = HashMap::from([
