@@ -1,3 +1,6 @@
+# v0.2.6
++ report cases where neither bases matches the reference as NN:1 when --reference-as-truth is passed.
+
 # v0.2.5
 + respect include and exclude for indels and denominator calculation (thanks Jason for reporting)
 

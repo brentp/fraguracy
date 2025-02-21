@@ -1,2 +1,5 @@
 /target
 *.bed.gz
+*-counts.txt
+*.bam
+*.bam.bai
