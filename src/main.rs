@@ -4,6 +4,7 @@ mod homopolymer;
 
 mod files;
 mod fraguracy;
+mod lua;
 
 //mod plot;
 #[macro_use]
@@ -134,6 +135,13 @@ enum Commands {
         exclude_regions: Option<PathBuf>,
 
         #[arg(
+            short = 'l',
+            long,
+            help = "optional lua expression to filter reads. returns true to skip read. e.g. 'return `read.flags.secondary` or `read.flags.supplementary`'."
+        )]
+        lua_expression: Option<String>,
+
+        #[arg(
             short,
             long,
             default_value_t = 151,
@@ -221,6 +229,7 @@ fn main() -> std::io::Result<()> {
             output_prefix,
             regions,
             exclude_regions,
+            lua_expression,
             bin_size,
             max_read_length,
             min_mapping_quality,
@@ -235,6 +244,7 @@ fn main() -> std::io::Result<()> {
             PathBuf::from(output_prefix),
             regions,
             exclude_regions,
+            lua_expression,
             bin_size as u32,
             max_read_length,
             min_mapping_quality,
@@ -308,6 +318,7 @@ fn process_bam(
     regions: Option<PathBuf>,
     chromosome: Option<String>,
     exclude_regions: Option<PathBuf>,
+    lua_expression: Option<lua::LuaReadFilter>,
     bin_size: u32,
     max_read_length: u32,
     min_mapping_quality: u8,
@@ -443,6 +454,18 @@ fn process_bam(
                     if b.mapq() < min_mapping_quality {
                         return;
                     }
+                    if let Some(ref lua_expression) = lua_expression {
+                        match lua_expression.skip_read(&a) {
+                            Ok(true) => return,
+                            Ok(false) => (),
+                            Err(e) => log::error!("error evaluating user expression for read: {e}"),
+                        }
+                        match lua_expression.skip_read(&b) {
+                            Ok(true) => return,
+                            Ok(false) => (),
+                            Err(e) => log::error!("error evaluating user expression for read: {e}"),
+                        }
+                    }
                     // we know a is before b, but we don't know if they overlap.
                     if a.cigar().end_pos() < b.pos() {
                         return;
@@ -484,6 +507,7 @@ fn extract_main(
     output_prefix: PathBuf,
     regions: Option<PathBuf>,
     exclude_regions: Option<PathBuf>,
+    lua_expression: Option<String>,
     bin_size: u32,
     max_read_length: u32,
     min_mapping_quality: u8,
@@ -507,6 +531,10 @@ fn extract_main(
         ));
     }
 
+    let lua_expression = lua_expression.map(|e| {
+        lua::LuaReadFilter::new(&e, mlua::Lua::new()).expect("error creating lua interpreter")
+    });
+
     let total_counts = paths
         .par_iter()
         .map(|path| {
@@ -516,6 +544,7 @@ fn extract_main(
                 regions.clone(),
                 chromosome.clone(),
                 exclude_regions.clone(),
+                lua_expression.clone(),
                 bin_size,
                 max_read_length,
                 min_mapping_quality,
