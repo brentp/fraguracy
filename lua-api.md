@@ -23,11 +23,13 @@ The `flags` object represents BAM flags returned from `read.flags` and provides 
 - `supplementary`: Returns true if this is a supplementary alignment
 - `flag`: Returns the raw integer flag value
 
-## Record
+## Read
 
-The `Record` object provides access to BAM record data with the following fields and methods:
+The `read` object provides access to BAM record data with the following fields and methods:
 
 ### Fields
+
+All of these are properties on the `read`, e.g. `read.mapping_quality`
 
 - `mapping_quality`: Returns the mapping quality
 - `flags`: Returns a `Flags` object
