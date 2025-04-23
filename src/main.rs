@@ -108,6 +108,7 @@ enum Commands {
             help = "fasta for use with crams and/or to use as 'truth'"
         )]
         fasta: Option<PathBuf>,
+        #[arg(required = true, help = "bam/cram files to analyze")]
         bams: Vec<PathBuf>,
         #[arg(
             short,

@@ -43,7 +43,6 @@ impl LuaReadFilter {
     pub fn skip_read(&self, read: &Record) -> Result<bool> {
         let r = self.lua.scope(|scope| {
             let globals = self.lua.globals();
-            eprintln!("read: {:?}", read);
             let user_data = scope.create_any_userdata_ref(read)?;
             globals.set("read", user_data).expect("failed to set read");
             self.filter_func.call::<bool>(())
