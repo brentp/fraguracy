@@ -371,7 +371,7 @@ fn process_bam(
                     + "-fraguracy-denominator-depth.bed.gz")
                     .to_string(),
             )
-            .unwrap();
+            .expect("error setting depth writer. check permissions/existence of output directory.");
     }
 
     if let Some(chromosome) = chromosome {
