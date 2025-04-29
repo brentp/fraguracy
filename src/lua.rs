@@ -77,7 +77,7 @@ impl LuaReadFilter {
                     .to_string())
             });
 
-            reg.add_field_method_get("3_prime_soft_clips", |_, this| {
+            reg.add_field_method_get("soft_clips_3_prime", |_, this| {
                 let cigar = this.cigar();
                 if this.is_reverse() {
                     Ok(cigar.leading_softclips())
@@ -85,7 +85,7 @@ impl LuaReadFilter {
                     Ok(cigar.trailing_softclips())
                 }
             });
-            reg.add_field_method_get("5_prime_soft_clips", |_, this| {
+            reg.add_field_method_get("soft_clips_5_prime", |_, this| {
                 let cigar = this.cigar();
                 if this.is_reverse() {
                     Ok(cigar.trailing_softclips())

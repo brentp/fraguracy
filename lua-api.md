@@ -40,8 +40,8 @@ All of these are properties on the `read`, e.g. `read.mapping_quality`
 - `insert_size`: Returns the insert size
 - `qname`: Returns the query name as a string
 - `sequence`: Returns the read sequence as a string
-- `3_prime_soft_clips`: Returns the number of soft-clipped bases at the 3' end
-- `5_prime_soft_clips`: Returns the number of soft-clipped bases at the 5' end
+- `soft_clips_3_prime`: Returns the number of soft-clipped bases at the 3' end
+- `soft_clips_5_prime`: Returns the number of soft-clipped bases at the 5' end
 - `base_counts`: Returns a table with counts of A, C, G, T, N in the read
 - `n_proportion`: Returns the proportion of N bases in the read (see methods to limit to 3' or 5')
 - `indel_count`: Returns the number of indels in the read
