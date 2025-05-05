@@ -66,6 +66,6 @@ which is not used in fraguracy.
 ## Usage Example
 
 ```lua
--- Filter reads with mapping quality >= 20 and not supplementary
-return read.mapping_quality >= 20 and not read.flags.supplementary
+-- skip reads with mapping quality >= 20 and not supplementary and where the proportion of N's in the last 10 bases is > 0.1
+return read.mapping_quality >= 20 and not read.flags.supplementary and read:n_proportion_3_prime(10) > 0.1
 ```
