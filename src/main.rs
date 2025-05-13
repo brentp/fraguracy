@@ -138,7 +138,7 @@ enum Commands {
         #[arg(
             short = 'l',
             long,
-            help = "optional lua expression to filter reads. returns true to skip read. e.g. 'return `read.flags.secondary` or `read.flags.supplementary`'."
+            help = "optional lua expression to filter reads. returns true to skip read. e.g. 'return read.flags.secondary or read.flags.supplementary'."
         )]
         lua_expression: Option<String>,
 

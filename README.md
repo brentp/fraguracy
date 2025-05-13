@@ -81,7 +81,7 @@ Options:
   -e, --exclude-regions <EXCLUDE_REGIONS>
           exclude from analysis the regions given in this BED file
   -l, --lua-expression <LUA_EXPRESSION>
-          optional lua expression to filter reads. returns true to skip read. e.g. 'return `read.flags.secondary` or `read.flags.supplementary`'.
+          optional lua expression to filter reads. returns true to skip read. e.g. 'return read.flags.secondary or read.flags.supplementary'.
   -m, --max-read-length <MAX_READ_LENGTH>
           indicate the maximum read length in the alignment file [default: 151]
   -b, --bin-size <BIN_SIZE>
