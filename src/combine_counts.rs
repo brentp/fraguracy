@@ -30,51 +30,51 @@ impl std::ops::AddAssign<Count> for Count {
 }
 
 impl Count {
-    fn from_line(s: &str) -> Count {
+    fn from_line(s: &str, file_name: &str) -> Count {
         let mut sp = s.trim().split('\t');
         Count {
-            read12: sp.next().expect("not enough columns in line {s}")[1..]
+            read12: sp.next().unwrap_or_else(|| panic!("not enough columns in line: {s} from file: {file_name}"))[1..]
                 .parse::<u8>()
-                .expect("error parsing int")
-                - 1,
+                .map(|val| val - 1)
+                .unwrap_or_else(|e| panic!("error parsing read12 from line: {s} in file: {file_name}, error: {e}")),
             orientation: match sp.next() {
                 Some("f") => 0,
                 Some("r") => 1,
-                _ => panic!("error parsing orientation expected f or r"),
+                _ => panic!("error parsing orientation, expected f or r, in line: {s} from file: {file_name}"),
             },
-            bq_bin: fraguracy::REVERSE_Q_LOOKUP[sp.next().expect("not enough columns in line {s}")],
+            bq_bin: fraguracy::REVERSE_Q_LOOKUP[sp.next().unwrap_or_else(|| panic!("not enough columns for bq_bin in line: {s} from file: {file_name}"))],
             read_pos: sp
                 .next()
-                .expect("not enough columns in line {s}")
+                .unwrap_or_else(|| panic!("not enough columns for read_pos in line: {s} from file: {file_name}"))
                 .parse::<u32>()
-                .expect("error parsing int"),
+                .unwrap_or_else(|e| panic!("error parsing read_pos from line: {s} in file: {file_name}, error: {e}")),
             context: {
-                let mut ctx = sp
+                let ctx_str = sp
                     .next()
-                    .expect("error getting ctx file from line {s}")
-                    .chars();
+                    .unwrap_or_else(|| panic!("error getting context string from line: {s} from file: {file_name}"));
+                let mut ctx_chars = ctx_str.chars();
                 [
-                    ctx.next().expect("expecting two characters for context"),
-                    ctx.next().expect("expecting two characters for context"),
+                    ctx_chars.next().unwrap_or_else(|| panic!("expecting two characters for context, got: {ctx_str} in line: {s} from file: {file_name}")),
+                    ctx_chars.next().unwrap_or_else(|| panic!("expecting two characters for context, got: {ctx_str} in line: {s} from file: {file_name}")),
                 ]
             },
             homopolymer_dist: sp
                 .next()
-                .expect("not enough columns in line {s}")
+                .unwrap_or_else(|| panic!("not enough columns for homopolymer_dist in line: {s} from file: {file_name}"))
                 .trim()
                 .parse::<i8>()
-                .expect("error parsing int"),
+                .unwrap_or_else(|e| panic!("error parsing homopolymer_dist from line: {s} in file: {file_name}, error: {e}")),
             total: sp
                 .next()
-                .expect("not enough columns in line {s}")
+                .unwrap_or_else(|| panic!("not enough columns for total in line: {s} from file: {file_name}"))
                 .parse::<u32>()
-                .expect("error parsing int"),
+                .unwrap_or_else(|e| panic!("error parsing total from line: {s} in file: {file_name}, error: {e}")),
             errors: sp
                 .next()
-                .expect("not enough columns in line {s}")
+                .unwrap_or_else(|| panic!("not enough columns for errors in line: {s} from file: {file_name}"))
                 .trim()
                 .parse::<u32>()
-                .expect("error parsing int {sp:?}"),
+                .unwrap_or_else(|e| panic!("error parsing errors from line: {s} in file: {file_name}, error: {e}")),
         }
     }
 }
@@ -104,7 +104,7 @@ pub(crate) fn combine_counts_main(
                 header = line.split('\t').take(8).collect::<Vec<_>>().join("\t");
                 continue;
             }
-            let mut c = Count::from_line(&line);
+            let mut c = Count::from_line(&line, count_file.to_str().unwrap());
             let entry = counts.take(&c);
             if let Some(entry) = entry {
                 c.total += entry.total;
@@ -144,9 +144,9 @@ mod tests {
 
     #[test]
     fn test_from_line() {
-        let line = "r1\tf\t05-19\t0\tAC\t-1\t61502\t609";
+        let line = "r1	f	05-19	0	AC	-1	61502	609";
 
-        let c = Count::from_line(line);
+        let c = Count::from_line(line, "test_file.txt");
         assert_eq!(c.read12, 0);
         assert_eq!(c.orientation, 0);
         assert_eq!(c.bq_bin, 1);
