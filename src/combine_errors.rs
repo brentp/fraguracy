@@ -102,10 +102,15 @@ impl IntervalHeap {
                 let line = fh.read_line(&mut buf);
                 if line.is_ok() && !buf.starts_with('#') {
                     let r = parse_bed_line(&buf, file_i as u32, &(ih.chom_to_tid));
-                    ih.h.push(Reverse(r.unwrap_or_else(|_| {
-                        panic!("Error parsing first line from file: '{buf}'")
-                    })));
-                    break;
+                    if r.is_err() && buf == "" {
+                        break;
+                    } else {
+                        ih.h.push(Reverse(r.unwrap_or_else(|_| {
+                            if buf != "" {}
+                            panic!("Error parsing first line from file: '{buf}'")
+                        })));
+                        break;
+                    }
                 }
             });
         ih
@@ -165,12 +170,15 @@ fn parse_bed_line(
         iv.count[0] = str::parse::<u32>(toks[3])?;
         iv
     } else {
-        panic!(
+        return Err(format!(
             "expecting 4, 6, or 7 columns in bed file, found {}",
             toks.len()
-        );
+        )
+        .into());
     };
-    iv.tid = chrom_to_tid[&iv.chrom];
+    iv.tid = *chrom_to_tid
+        .get(&iv.chrom)
+        .unwrap_or_else(|| panic!("chromosome '{}' not found in fai file", iv.chrom));
     Ok(iv)
 }
 
@@ -184,13 +192,13 @@ impl Iterator for IntervalHeap {
             let file_i = pop_iv.file_i;
             let fh = &mut self.files[file_i as usize];
             let mut buf = String::new();
-            let line = &fh.read_line(&mut buf);
-            if line.is_ok() && *(line).as_ref().unwrap() > 0 {
+            let line_len = &fh.read_line(&mut buf);
+            if line_len.is_ok() && *(line_len).as_ref().unwrap() > 0 {
                 let r = parse_bed_line(&buf, file_i, &self.chom_to_tid);
                 if let Ok(iv) = r {
                     self.h.push(Reverse(iv));
                 } else {
-                    panic!("{:?}", r.err().unwrap());
+                    panic!("{:?} line_len: {:?}", r.err().unwrap(), line_len);
                 }
             }
             Some(pop_iv)
