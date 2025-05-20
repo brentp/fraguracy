@@ -58,12 +58,18 @@ impl Count {
                     ctx_chars.next().unwrap_or_else(|| panic!("expecting two characters for context, got: {ctx_str} in line: {s} from file: {file_name}")),
                 ]
             },
-            homopolymer_dist: sp
-                .next()
-                .unwrap_or_else(|| panic!("not enough columns for homopolymer_dist in line: {s} from file: {file_name}"))
-                .trim()
-                .parse::<i8>()
-                .unwrap_or_else(|e| panic!("error parsing homopolymer_dist from line: {s} in file: {file_name}, error: {e}")),
+            homopolymer_dist: {
+                let val = sp
+                    .next()
+                    .unwrap_or_else(|| panic!("not enough columns for homopolymer_dist in line: {s} from file: {file_name}"))
+                    .trim();
+                if val == "NA" {
+                    i8::MAX
+                } else {
+                    val.parse::<i8>()
+                        .unwrap_or_else(|e| panic!("error parsing homopolymer_dist from line: {s} in file: {file_name}, error: {e}"))
+                }
+            },
             total: sp
                 .next()
                 .unwrap_or_else(|| panic!("not enough columns for total in line: {s} from file: {file_name}"))
