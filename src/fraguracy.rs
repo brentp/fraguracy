@@ -27,6 +27,8 @@ pub(crate) struct Position {
     pub bq_bin: u8,
 }
 
+pub type Length = i32;
+
 /// DepthMap is for a given genome position, the depth at each (aq, bq) pair.
 type DepthMap = HashMap<(u8, u8), u32>;
 
@@ -51,8 +53,8 @@ pub(crate) struct InnerCounts {
 
     // position -> error count. nice to find sites that are error-prone.
     pub(crate) error_positions: HashMap<Position, [u32; 7]>,
-    // position -> indel error counts
-    pub(crate) indel_error_positions: HashMap<Position, u32>,
+    // position, length -> indel error counts
+    pub(crate) indel_error_positions: HashMap<(Position, Length), u32>,
 }
 
 fn argmax<T: Ord>(slice: &[T]) -> Option<usize> {
@@ -72,8 +74,8 @@ impl std::ops::AddAssign<InnerCounts> for InnerCounts {
                 entry[i] += cnt[i];
             }
         }
-        for (pos, cnt) in o.indel_error_positions.into_iter() {
-            *(self.indel_error_positions.entry(pos)).or_insert(0) += cnt;
+        for ((pos, len), cnt) in o.indel_error_positions.into_iter() {
+            *(self.indel_error_positions.entry((pos, len))).or_insert(0) += cnt;
         }
     }
 }
@@ -371,11 +373,25 @@ impl Counts {
 
         let a_qual = a.qual();
         let b_qual = b.qual();
+        let mut a_off = 0;
+        let mut b_off = 0;
+        eprintln!("read_name: {}", unsafe {
+            str::from_utf8_unchecked(a.qname())
+        });
 
         let indel_errors =
             indel_error_pieces(&a.cigar(), &b.cigar(), a_qual, b_qual, min_base_qual);
-        indel_errors.iter().for_each(|c: &Coordinates| {
+        indel_errors.iter().enumerate().for_each(|(i, c)| {
             // include the event if any of it overlaps with the include tree.
+            eprintln!("c: {:?}", c);
+
+            match c.indel_type {
+                IndelType::Insertion(l) => {
+                    a_off += l;
+                    b_off += l;
+                }
+                _ => {}
+            }
             if let Some(t) = include_tree {
                 if t.count(c.start, c.stop) == 0 {
                     return;
@@ -387,15 +403,41 @@ impl Counts {
                     return;
                 }
             }
+            eprintln!(
+                "i: {}, c: {:?}, a.pos: {}, b.pos: {}, a_off: {}, b_off: {} a_cigar: {:?}, b_cigar: {:?}, len(a_qual): {}, len(b_qual): {}, a_idx: {}, b_idx: {}",
+                i,
+                c,
+                a.pos(),
+                b.pos(),
+                a_off,
+                b_off,
+                a.cigar().to_string(),
+                b.cigar().to_string(),
+                a_qual.len(),
+                b_qual.len(),
+                c.start as usize - a.pos() as usize - a_off as usize,
+                c.start as usize - b.pos() as usize - b_off as usize
+            );
 
-            for p in c.start..c.stop {
-                let p = Position {
-                    tid: a.tid() as u16,
-                    pos: p,
-                    bq_bin: 1,
-                };
-                *self.counts.indel_error_positions.entry(p).or_insert(0) += 1;
+
+            let p = Position {
+                tid: a.tid() as u16,
+                pos: c.start,
+                // bq_bin is the minimum of the two bases at the start of the indel.
+                bq_bin: Counts::qual_to_bin(
+                    a_qual[c.start as usize - a.pos() as usize - a_off as usize]
+                        .min(b_qual[c.start as usize - b.pos() as usize - b_off as usize]),
+                ),
+            };
+            let mut len = (c.stop - c.start) as i32;
+            if matches!(c.indel_type, IndelType::Deletion) {
+                len = -len;
             }
+            *self
+                .counts
+                .indel_error_positions
+                .entry((p, len))
+                .or_insert(0) += 1;
         });
         if log::log_enabled!(log::Level::Debug)
             && unsafe { str::from_utf8_unchecked(a.qname()) }
@@ -726,17 +768,24 @@ pub(crate) fn filter_read(r: &Rc<Record>) -> bool {
 pub struct Coordinates {
     pub start: u32,
     pub stop: u32,
+    pub indel_type: IndelType,
 }
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct QualCoord {
     pub coord: Coordinates,
     pub qual: u8,
+    pub indel_type: IndelType,
 }
 
 #[inline(always)]
 fn is_insertion(a: Cigar) -> bool {
     matches!(a, Cigar::Ins(_))
+}
+
+#[inline(always)]
+fn is_deletion(a: Cigar) -> bool {
+    matches!(a, Cigar::Del(_))
 }
 
 #[inline(always)]
@@ -758,6 +807,13 @@ fn reference(a: Cigar) -> i64 {
     }
 }
 
+#[derive(Debug, PartialEq, Eq, Clone, Ord, PartialOrd)]
+pub enum IndelType {
+    Insertion(u32),
+    Deletion,
+    NotIndel,
+}
+
 fn indel_coords(
     cig: &CigarStringView,
     genomic_min: u32,
@@ -769,37 +825,70 @@ fn indel_coords(
     let mut read_i = 0;
 
     for c in cig {
-        if start > genomic_max {
+        if start >= genomic_max {
             break;
         }
+        let orig_start = start;
         if start + (reference(*c) as u32) < genomic_min {
             start += reference(*c) as u32;
             read_i += query(*c) as usize;
             continue;
         }
+        eprintln!(
+            "start: {}, genomic_min: {}, genomic_max: {}, cig: {:?}, read_i: {}, consumes_query: {}, cig:{:?}",
+            start,
+            genomic_min,
+            genomic_max,
+            c,
+            read_i,
+            query(*c),
+            cig
+        );
+        let mut flip_back = false;
+        if start < genomic_min {
+            if query(*c) > 0 {
+                eprintln!("incrementing read_i by {}", genomic_min - start);
+                read_i += (genomic_min - start) as usize;
+                flip_back = true;
+            }
+            // TODO: note that we are resetting start here. so can't do flipbback below without orig_start
+            start = genomic_min;
+        }
+        if start >= genomic_max {
+            break;
+        }
         match c {
-            Cigar::Ins(_) => {
+            Cigar::Ins(l) => {
                 result.push(QualCoord {
                     coord: Coordinates {
-                        start,
-                        stop: start + 1,
+                        start: start.max(genomic_min),
+                        stop: (start + 1).min(genomic_max),
+                        indel_type: IndelType::Insertion(*l),
                     },
                     qual: base_quals[read_i],
+                    indel_type: IndelType::Insertion(*l),
                 });
             }
             Cigar::Del(d) => {
                 result.push(QualCoord {
                     coord: Coordinates {
-                        start,
-                        stop: start + *d,
+                        start: start.max(genomic_min),
+                        stop: (start + *d).min(genomic_max),
+                        indel_type: IndelType::Deletion,
                     },
                     qual: base_quals[read_i],
+                    indel_type: IndelType::Deletion,
                 });
             }
             _ => {}
         }
         start += reference(*c) as u32;
-        read_i += query(*c) as usize;
+        read_i += query(*c) as usize
+            - if flip_back {
+                (genomic_min - orig_start) as usize
+            } else {
+                0
+            };
     }
     result
 }
@@ -827,6 +916,7 @@ fn find_non_exact(
                 result.push(Coordinates {
                     start: a.coord.start,
                     stop: a.coord.stop,
+                    indel_type: a.indel_type.clone(),
                 });
             }
         }
@@ -928,14 +1018,29 @@ fn overlap_pieces(
                         Coordinates {
                             start: (a_read_pos + a_over) as u32,
                             stop: (a_read_pos + a_over + glen) as u32,
+                            indel_type: if is_insertion(aop) {
+                                IndelType::Insertion(aop.len() as u32)
+                            } else if is_deletion(aop) {
+                                IndelType::Deletion
+                            } else {
+                                IndelType::NotIndel
+                            },
                         },
                         Coordinates {
                             start: (b_read_pos + b_over) as u32,
                             stop: (b_read_pos + b_over + glen) as u32,
+                            indel_type: if is_insertion(bop) {
+                                IndelType::Insertion(bop.len() as u32)
+                            } else if is_deletion(bop) {
+                                IndelType::Deletion
+                            } else {
+                                IndelType::NotIndel
+                            },
                         },
                         Coordinates {
                             start: genome_start as u32,
                             stop: genome_stop as u32,
+                            indel_type: IndelType::NotIndel,
                         },
                     ])
                 }
@@ -991,42 +1096,54 @@ mod tests {
         let r = overlap_pieces(&a, &b, true);
         let expected = [
             [
-                Coordinates { start: 0, stop: 11 },
                 Coordinates {
-                    start: 10,
-                    stop: 21,
+                    start: 0,
+                    stop: 11,
+                    indel_type: IndelType::NotIndel,
                 },
                 Coordinates {
                     start: 10,
                     stop: 21,
+                    indel_type: IndelType::NotIndel,
+                },
+                Coordinates {
+                    start: 10,
+                    stop: 21,
+                    indel_type: IndelType::NotIndel,
                 },
             ],
             [
                 Coordinates {
                     start: 11,
                     stop: 23,
+                    indel_type: IndelType::NotIndel,
                 },
                 Coordinates {
                     start: 21,
                     stop: 33,
+                    indel_type: IndelType::NotIndel,
                 },
                 Coordinates {
                     start: 21,
                     stop: 33,
+                    indel_type: IndelType::NotIndel,
                 },
             ],
             [
                 Coordinates {
                     start: 23,
                     stop: 36,
+                    indel_type: IndelType::NotIndel,
                 },
                 Coordinates {
                     start: 33,
                     stop: 46,
+                    indel_type: IndelType::NotIndel,
                 },
                 Coordinates {
                     start: 33,
                     stop: 46,
+                    indel_type: IndelType::NotIndel,
                 },
             ],
         ];
@@ -1052,36 +1169,54 @@ mod tests {
 
         let expected = [
             [
-                Coordinates { start: 0, stop: 10 },
-                Coordinates { start: 3, stop: 13 },
-                Coordinates { start: 8, stop: 18 },
+                Coordinates {
+                    start: 0,
+                    stop: 10,
+                    indel_type: IndelType::NotIndel,
+                },
+                Coordinates {
+                    start: 3,
+                    stop: 13,
+                    indel_type: IndelType::NotIndel,
+                },
+                Coordinates {
+                    start: 8,
+                    stop: 18,
+                    indel_type: IndelType::NotIndel,
+                },
             ],
             [
                 Coordinates {
                     start: 10,
                     stop: 67,
+                    indel_type: IndelType::NotIndel,
                 },
                 Coordinates {
                     start: 13,
                     stop: 70,
+                    indel_type: IndelType::NotIndel,
                 },
                 Coordinates {
                     start: 18,
                     stop: 75,
+                    indel_type: IndelType::NotIndel,
                 },
             ],
             [
                 Coordinates {
                     start: 67,
                     stop: 90,
+                    indel_type: IndelType::NotIndel,
                 },
                 Coordinates {
                     start: 70,
                     stop: 93,
+                    indel_type: IndelType::NotIndel,
                 },
                 Coordinates {
                     start: 75,
                     stop: 98,
+                    indel_type: IndelType::NotIndel,
                 },
             ],
         ];
@@ -1104,10 +1239,14 @@ mod tests {
             Coordinates {
                 start: 15,
                 stop: 17,
+                indel_type: IndelType::Deletion,
             },
             Coordinates {
                 start: 20,
-                stop: 23,
+                stop: 23
+                    .min(cigar_a.end_pos() as u32)
+                    .min(cigar_b.end_pos() as u32),
+                indel_type: IndelType::Deletion,
             },
         ];
         let a_bqs = vec![30u8; 20];
@@ -1128,10 +1267,12 @@ mod tests {
             Coordinates {
                 start: 20,
                 stop: 23,
+                indel_type: IndelType::Deletion,
             },
             Coordinates {
                 start: 20,
                 stop: 21,
+                indel_type: IndelType::Insertion,
             },
         ];
         let a_bqs = vec![30u8; 20];

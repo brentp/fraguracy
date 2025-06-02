@@ -86,15 +86,15 @@ fn write_indel_errors(counts: &InnerCounts, output_prefix: PathBuf, chroms: Vec<
     let mut errfh = bgzf::Writer::from_path(&path).expect("error opening bgzip file!");
 
     errfh
-        .write_all(b"#chrom\tstart\tend\tcount\n")
+        .write_all(b"#chrom\tstart\tend\tcount\tlength\tbq_bin\n")
         .expect("error writing header");
 
-    for pos in counts.indel_error_positions.keys().sorted() {
-        let cnt = counts.indel_error_positions[pos];
+    for ((pos, len), cnt) in counts.indel_error_positions.iter().sorted() {
         let chrom = &chroms[pos.tid as usize];
         let position = pos.pos;
-        let end = position + 1;
-        let line = format!("{chrom}\t{position}\t{end}\t{cnt}\n");
+        let bq_bin = crate::fraguracy::Q_LOOKUP[pos.bq_bin as usize];
+        let end = position as i64 + (if *len > 0 { *len } else { 1 }) as i64;
+        let line = format!("{chrom}\t{position}\t{end}\t{cnt}\t{len}\t{bq_bin}\n");
         errfh
             .write_all(line.as_bytes())
             .expect("error writing to indel-error file");
