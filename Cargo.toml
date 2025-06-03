@@ -30,12 +30,30 @@ anyhow = "1.0.98"
 #plotly = "0.8.3"
 #polars = { version = "0.27.2", features = ["lazy", "strings"] }
 
+# Faster compilation profiles
+[profile.dev]
+# Reduce optimization for faster dev builds
+opt-level = 0
+# Keep incremental compilation enabled (default)
+incremental = true
+# Use more codegen units for parallel compilation
+codegen-units = 256
+
+# Still optimize dependencies for better runtime performance in dev
+[profile.dev.package."*"]
+opt-level = 2  # Reduced from 3 to 2 for faster compilation
 
 [profile.release]
-lto = "fat"
-codegen-units = 1
+# Use "thin" LTO instead of "fat" for faster release builds
+lto = "thin"
+# Increase codegen units for faster compilation
+codegen-units = 16
+# Enable debug info for better profiling
+debug = 1
 
-[profile.dev]
-opt-level = 1
-[profile.dev.package."*"]
-opt-level = 3
+# Fast release profile for quicker testing
+[profile.release-fast]
+inherits = "release"
+lto = false
+codegen-units = 256
+debug = false

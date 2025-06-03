@@ -27,10 +27,9 @@ pub(crate) struct Position {
     pub bq_bin: u8,
 }
 
-pub type Length = i32;
-
 /// DepthMap is for a given genome position, the depth at each (aq, bq) pair.
 type DepthMap = HashMap<(u8, u8), u32>;
+type Length = i32;
 
 pub(crate) const MAX_HP_DIST: i16 = 15;
 
@@ -53,7 +52,7 @@ pub(crate) struct InnerCounts {
 
     // position -> error count. nice to find sites that are error-prone.
     pub(crate) error_positions: HashMap<Position, [u32; 7]>,
-    // position, length -> indel error counts
+    // position -> indel error counts
     pub(crate) indel_error_positions: HashMap<(Position, Length), u32>,
 }
 
@@ -74,8 +73,8 @@ impl std::ops::AddAssign<InnerCounts> for InnerCounts {
                 entry[i] += cnt[i];
             }
         }
-        for ((pos, len), cnt) in o.indel_error_positions.into_iter() {
-            *(self.indel_error_positions.entry((pos, len))).or_insert(0) += cnt;
+        for (pos, cnt) in o.indel_error_positions.into_iter() {
+            *(self.indel_error_positions.entry(pos)).or_insert(0) += cnt;
         }
     }
 }
@@ -351,7 +350,7 @@ impl Counts {
         exclude_tree: &Option<&Lapper<u32, u8>>,
         hp_tree: &Option<Lapper<u32, u8>>,
     ) {
-        let pieces = overlap_pieces(&a.cigar(), &b.cigar(), true);
+        let pieces = overlap_pieces(&a.cigar(), &b.cigar(), a.qual(), b.qual(), true);
         if pieces.is_empty() {
             return;
         }
@@ -373,25 +372,11 @@ impl Counts {
 
         let a_qual = a.qual();
         let b_qual = b.qual();
-        let mut a_off = 0;
-        let mut b_off = 0;
-        eprintln!("read_name: {}", unsafe {
-            str::from_utf8_unchecked(a.qname())
-        });
 
         let indel_errors =
             indel_error_pieces(&a.cigar(), &b.cigar(), a_qual, b_qual, min_base_qual);
-        indel_errors.iter().enumerate().for_each(|(i, c)| {
+        indel_errors.iter().for_each(|c: &Coordinates| {
             // include the event if any of it overlaps with the include tree.
-            eprintln!("c: {:?}", c);
-
-            match c.indel_type {
-                IndelType::Insertion(l) => {
-                    a_off += l;
-                    b_off += l;
-                }
-                _ => {}
-            }
             if let Some(t) = include_tree {
                 if t.count(c.start, c.stop) == 0 {
                     return;
@@ -403,36 +388,18 @@ impl Counts {
                     return;
                 }
             }
-            eprintln!(
-                "i: {}, c: {:?}, a.pos: {}, b.pos: {}, a_off: {}, b_off: {} a_cigar: {:?}, b_cigar: {:?}, len(a_qual): {}, len(b_qual): {}, a_idx: {}, b_idx: {}",
-                i,
-                c,
-                a.pos(),
-                b.pos(),
-                a_off,
-                b_off,
-                a.cigar().to_string(),
-                b.cigar().to_string(),
-                a_qual.len(),
-                b_qual.len(),
-                c.start as usize - a.pos() as usize - a_off as usize,
-                c.start as usize - b.pos() as usize - b_off as usize
-            );
 
+            let len = match c.indel_type {
+                IndelType::Insertion(len) => len as i32,
+                IndelType::Deletion(len) => -(len as i32),
+                IndelType::NotIndel => 0,
+            };
 
             let p = Position {
                 tid: a.tid() as u16,
                 pos: c.start,
-                // bq_bin is the minimum of the two bases at the start of the indel.
-                bq_bin: Counts::qual_to_bin(
-                    a_qual[c.start as usize - a.pos() as usize - a_off as usize]
-                        .min(b_qual[c.start as usize - b.pos() as usize - b_off as usize]),
-                ),
+                bq_bin: Counts::qual_to_bin(c.qual),
             };
-            let mut len = (c.stop - c.start) as i32;
-            if matches!(c.indel_type, IndelType::Deletion) {
-                len = -len;
-            }
             *self
                 .counts
                 .indel_error_positions
@@ -769,23 +736,19 @@ pub struct Coordinates {
     pub start: u32,
     pub stop: u32,
     pub indel_type: IndelType,
+    pub qual: u8,
 }
 
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct QualCoord {
-    pub coord: Coordinates,
-    pub qual: u8,
-    pub indel_type: IndelType,
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone)]
+pub enum IndelType {
+    Insertion(u32),
+    Deletion(u32),
+    NotIndel,
 }
 
 #[inline(always)]
 fn is_insertion(a: Cigar) -> bool {
     matches!(a, Cigar::Ins(_))
-}
-
-#[inline(always)]
-fn is_deletion(a: Cigar) -> bool {
-    matches!(a, Cigar::Del(_))
 }
 
 #[inline(always)]
@@ -807,95 +770,54 @@ fn reference(a: Cigar) -> i64 {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, Clone, Ord, PartialOrd)]
-pub enum IndelType {
-    Insertion(u32),
-    Deletion,
-    NotIndel,
-}
-
 fn indel_coords(
     cig: &CigarStringView,
     genomic_min: u32,
     genomic_max: u32,
     base_quals: &[u8],
-) -> Vec<QualCoord> {
-    let mut result: Vec<QualCoord> = Vec::new();
+) -> Vec<Coordinates> {
+    let mut result: Vec<Coordinates> = Vec::new();
     let mut start: u32 = cig.pos() as u32;
     let mut read_i = 0;
 
     for c in cig {
-        if start >= genomic_max {
+        if start > genomic_max {
             break;
         }
-        let orig_start = start;
         if start + (reference(*c) as u32) < genomic_min {
             start += reference(*c) as u32;
             read_i += query(*c) as usize;
             continue;
         }
-        eprintln!(
-            "start: {}, genomic_min: {}, genomic_max: {}, cig: {:?}, read_i: {}, consumes_query: {}, cig:{:?}",
-            start,
-            genomic_min,
-            genomic_max,
-            c,
-            read_i,
-            query(*c),
-            cig
-        );
-        let mut flip_back = false;
-        if start < genomic_min {
-            if query(*c) > 0 {
-                eprintln!("incrementing read_i by {}", genomic_min - start);
-                read_i += (genomic_min - start) as usize;
-                flip_back = true;
-            }
-            // TODO: note that we are resetting start here. so can't do flipbback below without orig_start
-            start = genomic_min;
-        }
-        if start >= genomic_max {
-            break;
-        }
+        // TODO: handle partial overlap of start with the current cigar op.
         match c {
             Cigar::Ins(l) => {
-                result.push(QualCoord {
-                    coord: Coordinates {
-                        start: start.max(genomic_min),
-                        stop: (start + 1).min(genomic_max),
-                        indel_type: IndelType::Insertion(*l),
-                    },
+                result.push(Coordinates {
+                    start,
+                    stop: start + 1,
+                    indel_type: IndelType::Insertion(*l as u32),
                     qual: base_quals[read_i],
-                    indel_type: IndelType::Insertion(*l),
                 });
             }
             Cigar::Del(d) => {
-                result.push(QualCoord {
-                    coord: Coordinates {
-                        start: start.max(genomic_min),
-                        stop: (start + *d).min(genomic_max),
-                        indel_type: IndelType::Deletion,
-                    },
+                result.push(Coordinates {
+                    start,
+                    stop: start + *d,
+                    indel_type: IndelType::Deletion(*d as u32),
                     qual: base_quals[read_i],
-                    indel_type: IndelType::Deletion,
                 });
             }
             _ => {}
         }
         start += reference(*c) as u32;
-        read_i += query(*c) as usize
-            - if flip_back {
-                (genomic_min - orig_start) as usize
-            } else {
-                0
-            };
+        read_i += query(*c) as usize;
     }
     result
 }
 
 fn find_non_exact(
-    a_indel_coords: &[QualCoord],
-    b_indel_coords: &[QualCoord],
+    a_indel_coords: &[Coordinates],
+    b_indel_coords: &[Coordinates],
     result: &mut Vec<Coordinates>,
     min_base_qual: u8,
 ) {
@@ -903,7 +825,7 @@ fn find_non_exact(
         if a.qual <= min_base_qual {
             continue;
         }
-        match b_indel_coords.binary_search_by(|b| b.coord.cmp(&a.coord)) {
+        match b_indel_coords.binary_search_by(|b| b.cmp(a)) {
             Ok(_) => {}
             Err(bi) => {
                 // we check base-qual (first base) of b as well.
@@ -912,11 +834,17 @@ fn find_non_exact(
                 if bi < b_indel_coords.len() && b_indel_coords[bi].qual < min_base_qual {
                     continue;
                 }
+                let bq = if bi < b_indel_coords.len() {
+                    b_indel_coords[bi].qual
+                } else {
+                    u8::MAX
+                };
                 // any non-exact matches are errors
                 result.push(Coordinates {
-                    start: a.coord.start,
-                    stop: a.coord.stop,
+                    start: a.start,
+                    stop: a.stop,
                     indel_type: a.indel_type.clone(),
+                    qual: a.qual.min(bq),
                 });
             }
         }
@@ -955,6 +883,8 @@ fn indel_error_pieces(
 fn overlap_pieces(
     a: &CigarStringView,
     b: &CigarStringView,
+    a_qual: &[u8],
+    b_qual: &[u8],
     skip_insertions: bool,
 ) -> Vec<[Coordinates; 3]> {
     let aend = a.end_pos();
@@ -1018,29 +948,32 @@ fn overlap_pieces(
                         Coordinates {
                             start: (a_read_pos + a_over) as u32,
                             stop: (a_read_pos + a_over + glen) as u32,
-                            indel_type: if is_insertion(aop) {
-                                IndelType::Insertion(aop.len() as u32)
-                            } else if is_deletion(aop) {
-                                IndelType::Deletion
-                            } else {
-                                IndelType::NotIndel
+                            indel_type: match aop {
+                                Cigar::Ins(l) => IndelType::Insertion(l as u32),
+                                Cigar::Del(l) => IndelType::Deletion(l as u32),
+                                _ => IndelType::NotIndel,
                             },
+                            qual: a_qual[a_read_pos as usize + a_over as usize],
                         },
                         Coordinates {
                             start: (b_read_pos + b_over) as u32,
                             stop: (b_read_pos + b_over + glen) as u32,
-                            indel_type: if is_insertion(bop) {
-                                IndelType::Insertion(bop.len() as u32)
-                            } else if is_deletion(bop) {
-                                IndelType::Deletion
-                            } else {
-                                IndelType::NotIndel
+                            indel_type: match bop {
+                                Cigar::Ins(l) => IndelType::Insertion(l as u32),
+                                Cigar::Del(l) => IndelType::Deletion(l as u32),
+                                _ => IndelType::NotIndel,
                             },
+                            qual: b_qual[b_read_pos as usize + b_over as usize],
                         },
                         Coordinates {
                             start: genome_start as u32,
                             stop: genome_stop as u32,
-                            indel_type: IndelType::NotIndel,
+                            indel_type: match aop {
+                                Cigar::Ins(l) => IndelType::Insertion(l as u32),
+                                Cigar::Del(l) => IndelType::Deletion(l as u32),
+                                _ => IndelType::NotIndel,
+                            },
+                            qual: a_qual[a_read_pos as usize + a_over as usize],
                         },
                     ])
                 }
@@ -1071,7 +1004,9 @@ mod tests {
     fn test_different_alignments() {
         let a = CigarString(vec![Cigar::Match(5), Cigar::Ins(3), Cigar::Match(5)]).into_view(0);
         let b = CigarString(vec![Cigar::Match(13)]).into_view(0);
-        let r = overlap_pieces(&a, &b, true);
+        let a_bqs = vec![30u8; 20];
+        let b_bqs = vec![30u8; 20];
+        let r = overlap_pieces(&a, &b, &a_bqs, &b_bqs, true);
         dbg!(&r);
     }
 
@@ -1079,7 +1014,9 @@ mod tests {
     fn test_same_insertion() {
         let a = CigarString(vec![Cigar::Match(10), Cigar::Ins(8), Cigar::Match(10)]).into_view(5);
         let b = CigarString(vec![Cigar::Match(10), Cigar::Ins(8), Cigar::Match(10)]).into_view(5);
-        let r = overlap_pieces(&a, &b, false);
+        let a_bqs = vec![30u8; 20];
+        let b_bqs = vec![30u8; 20];
+        let r = overlap_pieces(&a, &b, &a_bqs, &b_bqs, false);
         dbg!(&r);
     }
 
@@ -1093,23 +1030,28 @@ mod tests {
             Cigar::Match(13),
         ])
         .into_view(0);
-        let r = overlap_pieces(&a, &b, true);
+        let a_bqs = vec![30u8; 200];
+        let b_bqs = vec![30u8; 200];
+        let r = overlap_pieces(&a, &b, &a_bqs, &b_bqs, true);
         let expected = [
             [
                 Coordinates {
                     start: 0,
                     stop: 11,
                     indel_type: IndelType::NotIndel,
+                    qual: 30,
                 },
                 Coordinates {
                     start: 10,
                     stop: 21,
                     indel_type: IndelType::NotIndel,
+                    qual: 30,
                 },
                 Coordinates {
                     start: 10,
                     stop: 21,
                     indel_type: IndelType::NotIndel,
+                    qual: 30,
                 },
             ],
             [
@@ -1117,16 +1059,19 @@ mod tests {
                     start: 11,
                     stop: 23,
                     indel_type: IndelType::NotIndel,
+                    qual: 30,
                 },
                 Coordinates {
                     start: 21,
                     stop: 33,
                     indel_type: IndelType::NotIndel,
+                    qual: 30,
                 },
                 Coordinates {
                     start: 21,
                     stop: 33,
                     indel_type: IndelType::NotIndel,
+                    qual: 30,
                 },
             ],
             [
@@ -1134,16 +1079,19 @@ mod tests {
                     start: 23,
                     stop: 36,
                     indel_type: IndelType::NotIndel,
+                    qual: 30,
                 },
                 Coordinates {
                     start: 33,
                     stop: 46,
                     indel_type: IndelType::NotIndel,
+                    qual: 30,
                 },
                 Coordinates {
                     start: 33,
                     stop: 46,
                     indel_type: IndelType::NotIndel,
+                    qual: 30,
                 },
             ],
         ];
@@ -1165,7 +1113,9 @@ mod tests {
         ])
         .into_view(5);
 
-        let r = overlap_pieces(&a, &b, true);
+        let a_bqs = vec![30u8; 100];
+        let b_bqs = vec![30u8; 100];
+        let r = overlap_pieces(&a, &b, &a_bqs, &b_bqs, true);
 
         let expected = [
             [
@@ -1173,16 +1123,19 @@ mod tests {
                     start: 0,
                     stop: 10,
                     indel_type: IndelType::NotIndel,
+                    qual: 30,
                 },
                 Coordinates {
                     start: 3,
                     stop: 13,
                     indel_type: IndelType::NotIndel,
+                    qual: 30,
                 },
                 Coordinates {
                     start: 8,
                     stop: 18,
                     indel_type: IndelType::NotIndel,
+                    qual: 30,
                 },
             ],
             [
@@ -1190,16 +1143,19 @@ mod tests {
                     start: 10,
                     stop: 67,
                     indel_type: IndelType::NotIndel,
+                    qual: 30,
                 },
                 Coordinates {
                     start: 13,
                     stop: 70,
                     indel_type: IndelType::NotIndel,
+                    qual: 30,
                 },
                 Coordinates {
                     start: 18,
                     stop: 75,
                     indel_type: IndelType::NotIndel,
+                    qual: 30,
                 },
             ],
             [
@@ -1207,16 +1163,19 @@ mod tests {
                     start: 67,
                     stop: 90,
                     indel_type: IndelType::NotIndel,
+                    qual: 30,
                 },
                 Coordinates {
                     start: 70,
                     stop: 93,
                     indel_type: IndelType::NotIndel,
+                    qual: 30,
                 },
                 Coordinates {
                     start: 75,
                     stop: 98,
                     indel_type: IndelType::NotIndel,
+                    qual: 30,
                 },
             ],
         ];
@@ -1239,14 +1198,14 @@ mod tests {
             Coordinates {
                 start: 15,
                 stop: 17,
-                indel_type: IndelType::Deletion,
+                indel_type: IndelType::Deletion(2),
+                qual: 30,
             },
             Coordinates {
                 start: 20,
-                stop: 23
-                    .min(cigar_a.end_pos() as u32)
-                    .min(cigar_b.end_pos() as u32),
-                indel_type: IndelType::Deletion,
+                stop: 23,
+                indel_type: IndelType::Deletion(3),
+                qual: 30,
             },
         ];
         let a_bqs = vec![30u8; 20];
@@ -1267,12 +1226,14 @@ mod tests {
             Coordinates {
                 start: 20,
                 stop: 23,
-                indel_type: IndelType::Deletion,
+                indel_type: IndelType::Deletion(3),
+                qual: 30,
             },
             Coordinates {
                 start: 20,
                 stop: 21,
-                indel_type: IndelType::Insertion,
+                indel_type: IndelType::Insertion(3),
+                qual: 30,
             },
         ];
         let a_bqs = vec![30u8; 20];

@@ -1,2 +1,27 @@
-[build]
-#rustflags = ["-C", "target-feature=+crt-static"]
+# Cargo configuration for faster compilation
+
+# Use all available CPU cores for compilation
+
+# Enable experimental parallel frontend (Rust 1.70+)
+linker = "clang"
+rustflags = [
+    "-C", "target-cpu=native",  # Optimize for your specific CPU
+    "-C", "link-arg=-fuse-ld=lld",  # Use gold linker for faster linking
+]
+
+# Use faster linker if available
+[target.x86_64-unknown-linux-gnu]
+linker = "clang"
+rustflags = [
+    "-C", "link-arg=-fuse-ld=lld",  # Use gold linker for faster linking
+    "-C", "target-cpu=native",
+]
+
+# Enable pipelined compilation (experimental)
+[unstable]
+# Uncomment if using nightly Rust
+# pipelined-compilation = true
+
+[env]
+# Increase parallel rustc processes
+CARGO_BUILD_RUSTC_OPTS = "-C codegen-units=16"
