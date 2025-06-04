@@ -20,6 +20,7 @@ struct Interval {
     start: u32,
     end: u32,
     group: u8,
+    length: i32,
     count: [u32; 7],
     file_i: u32,
 }
@@ -28,6 +29,7 @@ struct IntervalHeap {
     h: BinaryHeap<Reverse<Interval>>,
     files: Vec<Box<dyn BufRead>>,
     chom_to_tid: HashMap<String, i32>,
+    is_indel: Vec<bool>,
 }
 
 fn read_fai(path: PathBuf) -> HashMap<String, i32> {
@@ -61,6 +63,7 @@ impl Add<&Interval> for &Interval {
         assert_eq!(self.start, other.start);
         assert_eq!(self.end, other.end);
         assert_eq!(self.group, other.group);
+        assert_eq!(self.length, other.length, "indel lengths must be equal");
         let counts = self
             .count
             .iter()
@@ -81,6 +84,9 @@ impl Add<&Interval> for &Interval {
 }
 
 impl IntervalHeap {
+    fn all_indels(&self) -> bool {
+        self.is_indel.iter().all(|&x| x)
+    }
     fn new(paths: Vec<PathBuf>, fai_path: PathBuf) -> IntervalHeap {
         let fhs: Vec<Box<dyn BufRead>> = paths
             .iter()
@@ -91,17 +97,27 @@ impl IntervalHeap {
             h: BinaryHeap::new(),
             files: fhs,
             chom_to_tid: read_fai(fai_path),
+            is_indel: paths
+                .iter()
+                .map(|p| p.to_string_lossy().ends_with("indel-errors.bed.gz"))
+                .collect(),
         };
+
+        assert!(
+            ih.is_indel.iter().all(|&x| x) || ih.is_indel.iter().all(|&x| !x),
+            "all files must be either indel error files or base error files, not a mix"
+        );
 
         ih.files
             .iter_mut()
             .enumerate()
             .for_each(|(file_i, fh)| loop {
                 // loop to skip '#' comment lines
+                let is_indel = ih.is_indel[file_i];
                 let mut buf = String::new();
                 let line = fh.read_line(&mut buf);
                 if line.is_ok() && !buf.starts_with('#') {
-                    let r = parse_bed_line(&buf, file_i as u32, &(ih.chom_to_tid));
+                    let r = parse_bed_line(&buf, file_i as u32, &(ih.chom_to_tid), is_indel);
                     if r.is_err() && buf == "" {
                         break;
                     } else {
@@ -120,10 +136,11 @@ fn parse_bed_line(
     line: &str,
     file_i: u32,
     chrom_to_tid: &HashMap<String, i32>,
+    is_indel: bool,
 ) -> Result<Interval, Box<dyn Error>> {
     let toks: Vec<&str> = line.trim().split('\t').collect();
     // can be 6 if combine-errors was already run once.
-    let mut iv = if toks.len() == 6 || toks.len() == 7 {
+    let mut iv = if !is_indel {
         let mut iv = Interval {
             tid: 0,
             chrom: String::from(toks[0]),
@@ -132,6 +149,7 @@ fn parse_bed_line(
             group: (*fraguracy::REVERSE_Q_LOOKUP
                 .get(toks[3].trim())
                 .unwrap_or_else(|| panic!("unknown bq bin: {}", toks[3]))),
+            length: 0,
             count: [0; 7],
 
             file_i,
@@ -155,26 +173,23 @@ fn parse_bed_line(
             iv.count[idx] += count.parse::<u32>().unwrap();
         }
         iv
-    } else if toks.len() == 4 {
+    } else {
         // indel errors
         let mut iv = Interval {
             tid: 0,
             chrom: String::from(toks[0]),
             start: str::parse::<u32>(toks[1])?,
             end: str::parse::<u32>(toks[2])?,
-            group: u8::MAX,
+            group: *fraguracy::REVERSE_Q_LOOKUP
+                .get(toks[5].trim())
+                .unwrap_or_else(|| panic!("unknown bq bin: {}", toks[5])),
             count: [0; 7],
+            length: str::parse::<i32>(toks[4])?,
             file_i,
         };
         // store the count in the first position for indels.
         iv.count[0] = str::parse::<u32>(toks[3])?;
         iv
-    } else {
-        return Err(format!(
-            "expecting 4, 6, or 7 columns in bed file, found {}",
-            toks.len()
-        )
-        .into());
     };
     iv.tid = *chrom_to_tid
         .get(&iv.chrom)
@@ -190,11 +205,12 @@ impl Iterator for IntervalHeap {
         if let Some(pop_iv) = self.h.pop() {
             let pop_iv = pop_iv.0;
             let file_i = pop_iv.file_i;
+            let is_indel = self.is_indel[file_i as usize];
             let fh = &mut self.files[file_i as usize];
             let mut buf = String::new();
             let line_len = &fh.read_line(&mut buf);
             if line_len.is_ok() && *(line_len).as_ref().unwrap() > 0 {
-                let r = parse_bed_line(&buf, file_i, &self.chom_to_tid);
+                let r = parse_bed_line(&buf, file_i, &self.chom_to_tid, is_indel);
                 if let Ok(iv) = r {
                     self.h.push(Reverse(iv));
                 } else {
@@ -210,7 +226,11 @@ impl Iterator for IntervalHeap {
 
 impl PartialEq for Interval {
     fn eq(&self, b: &Interval) -> bool {
-        self.chrom == b.chrom && self.start == b.start && self.end == b.end && self.group == b.group
+        self.chrom == b.chrom
+            && self.start == b.start
+            && self.end == b.end
+            && self.group == b.group
+            && self.length == b.length
     }
 }
 
@@ -240,6 +260,14 @@ impl PartialOrd for Interval {
             };
         }
 
+        if self.length != b.length {
+            return if self.length < b.length {
+                Some(Ordering::Less)
+            } else {
+                Some(Ordering::Greater)
+            };
+        }
+
         Some(self.group.cmp(&b.group))
     }
 }
@@ -256,22 +284,35 @@ pub(crate) fn combine_errors_main(
     output_path: String,
 ) -> io::Result<()> {
     let ih = IntervalHeap::new(paths, fai_path);
+    if ih.all_indels() {
+        log::info!("all indels");
+    }
 
     // Append .gz if not already present
-    let output_path = if !output_path.ends_with(".gz") {
+    let mut output_path = if !output_path.ends_with(".gz") {
         output_path + ".gz"
     } else {
         output_path
     };
+    let all_indels = ih.all_indels();
+
+    if all_indels && !output_path.ends_with("indel-errors.bed.gz") {
+        log::warn!("all indels, but output path does not end with 'indel-errors.bed.gz'. renaming");
+        output_path = output_path.replace(".bed.gz", "indel-errors.bed.gz");
+    }
 
     let mut writer =
         bgzf::Writer::from_path(&output_path).expect("error creating bgzip output file");
 
-    writer.write_all(b"#chrom\tstart\tend\tbq_bin\tcount\tcontexts\tn_samples\n")?;
+    if all_indels {
+        writer.write_all(b"#chrom\tstart\tend\t\tcount\tlength\tbq_bin\tn_samples\n")?;
+    } else {
+        writer.write_all(b"#chrom\tstart\tend\tbq_bin\tcount\tcontexts\tn_samples\n")?;
+    }
 
     for (_, ivs) in &ih
         .into_iter()
-        .group_by(|iv| (iv.tid, iv.start, iv.end, iv.group))
+        .group_by(|iv| (iv.tid, iv.start, iv.end, iv.group, iv.length))
     {
         let ivs: Vec<Interval> = ivs.into_iter().collect();
         let n = ivs
@@ -281,22 +322,34 @@ pub(crate) fn combine_errors_main(
         let iv0 = ivs[0].clone();
         let iv = ivs.iter().skip(1).fold(iv0, |acc, iv| &acc + iv);
 
-        let (total_count, context_str) = crate::files::format_context_counts(iv.count);
-
-        let line = format!(
-            "{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
-            iv.chrom,
-            iv.start,
-            iv.end,
-            if iv.group == u8::MAX {
-                "NA"
-            } else {
-                fraguracy::Q_LOOKUP[iv.group as usize]
-            },
-            total_count,
-            context_str,
-            n
-        );
+        let line = if all_indels {
+            format!(
+                "{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+                iv.chrom,
+                iv.start,
+                iv.end,
+                iv.count[0],
+                iv.length,
+                fraguracy::Q_LOOKUP[iv.group as usize],
+                n
+            )
+        } else {
+            let (total_count, context_str) = crate::files::format_context_counts(iv.count);
+            format!(
+                "{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+                iv.chrom,
+                iv.start,
+                iv.end,
+                if iv.group == u8::MAX {
+                    "NA"
+                } else {
+                    fraguracy::Q_LOOKUP[iv.group as usize]
+                },
+                total_count,
+                context_str,
+                n
+            )
+        };
         writer.write_all(line.as_bytes())?;
     }
     log::info!("wrote {}", output_path);

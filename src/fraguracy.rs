@@ -548,7 +548,8 @@ impl Counts {
                         .expect("error extracting base")[0] as char
                 };
                 if real_base == 'N' {
-                    log::warn!("got 'N' for {chrom:?}:{genome_pos} base skipping");
+                    let chrom_string = chrom.as_ref();
+                    log::warn!("got 'N' for {chrom_string}:{genome_pos}. skipping");
                     let pos = Position {
                         tid: a.tid() as u16,
                         pos: genome_pos,

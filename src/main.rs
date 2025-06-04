@@ -57,7 +57,7 @@ struct Cli {
 enum Commands {
     #[command(
         arg_required_else_help = true,
-        about = "combine error bed files from extract"
+        about = "combine error bed files from extract. file names are used to determine if they are indel errors or base errors."
     )]
     CombineErrors {
         #[arg(
