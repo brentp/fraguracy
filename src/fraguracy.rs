@@ -406,12 +406,6 @@ impl Counts {
                 .entry((p, len))
                 .or_insert(0) += 1;
         });
-        if log::log_enabled!(log::Level::Debug)
-            && unsafe { str::from_utf8_unchecked(a.qname()) }
-                == "A00744:46:HV3C3DSXX:2:2611:30798:35258"
-        {
-            log::debug!("pieces: {:?}", pieces);
-        }
 
         let mut genome_pos = u32::MAX;
         for [a_chunk, b_chunk, g_chunk] in pieces {
