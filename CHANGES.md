@@ -1,3 +1,7 @@
+# v0.2.7
++ indels: report length and bq-bin
++ combine_counts: better error messages and handle NA
+
 # v0.2.6
 + report cases where neither bases matches the reference as NN:1 when --reference-as-truth is passed.
 + add lua expressions to filter reads
