@@ -33,6 +33,25 @@ type Length = i32;
 
 pub(crate) const MAX_HP_DIST: i16 = 15;
 
+/// Returns the homopolymer distance with the minimum absolute value.
+/// If both distances are available, returns the one with smaller absolute value.
+/// If only one is available, returns that one.
+/// If neither is available, returns None.
+fn min_abs_hp_distance(dist_a: Option<i16>, dist_b: Option<i16>) -> Option<i16> {
+    match (dist_a, dist_b) {
+        (Some(a), Some(b)) => {
+            if a.abs() <= b.abs() {
+                Some(a)
+            } else {
+                Some(b)
+            }
+        }
+        (Some(a), None) => Some(a),
+        (None, Some(b)) => Some(b),
+        (None, None) => None,
+    }
+}
+
 pub(crate) struct Counts {
     pub(crate) ibam: Option<IndexedReader>,
     //  read, f/r pos, bq, bp, ctx{6} */
@@ -53,7 +72,7 @@ pub(crate) struct InnerCounts {
     // position -> error count. nice to find sites that are error-prone.
     pub(crate) error_positions: HashMap<Position, [u32; 7]>,
     // position -> indel error counts
-    pub(crate) indel_error_positions: HashMap<(Position, Length), u32>,
+    pub(crate) indel_error_positions: HashMap<(Position, Length, i16), u32>,
 }
 
 fn argmax<T: Ord>(slice: &[T]) -> Option<usize> {
@@ -400,10 +419,38 @@ impl Counts {
                 pos: c.start,
                 bq_bin: Counts::qual_to_bin(c.qual),
             };
+
+            let hps = hp_tree.as_ref().map(|t| {
+                t.find(
+                    c.start.max(MAX_HP_DIST as u32) - MAX_HP_DIST as u32,
+                    c.stop + MAX_HP_DIST as u32,
+                )
+                .collect::<Vec<_>>()
+            });
+
+            let hp_dist_a = hp::hp_distance(
+                hps.as_deref(),
+                c.start,
+                a.pos() as u32,
+                a.cigar().end_pos() as u32,
+                if a.is_reverse() { -1 } else { 1 },
+            );
+
+            let hp_dist_b = hp::hp_distance(
+                hps.as_deref(),
+                c.start,
+                b.pos() as u32,
+                b.cigar().end_pos() as u32,
+                if b.is_reverse() { -1 } else { 1 },
+            );
+
+            let indel_hp_dist =
+                min_abs_hp_distance(hp_dist_a, hp_dist_b).unwrap_or(MAX_HP_DIST + 1 as i16);
+
             *self
                 .counts
                 .indel_error_positions
-                .entry((p, len))
+                .entry((p, len, indel_hp_dist))
                 .or_insert(0) += 1;
         });
 
@@ -1181,6 +1228,26 @@ mod tests {
     #[test]
     fn test_size() {
         assert_eq!(std::mem::size_of::<Position>(), 8);
+    }
+
+    #[test]
+    fn test_min_abs_hp_distance() {
+        // Both distances available - choose minimum absolute value
+        assert_eq!(min_abs_hp_distance(Some(-1), Some(2)), Some(-1));
+        assert_eq!(min_abs_hp_distance(Some(2), Some(-1)), Some(-1));
+        assert_eq!(min_abs_hp_distance(Some(-3), Some(-2)), Some(-2));
+        assert_eq!(min_abs_hp_distance(Some(3), Some(2)), Some(2));
+
+        // Equal absolute values - choose first one
+        assert_eq!(min_abs_hp_distance(Some(-2), Some(2)), Some(-2));
+        assert_eq!(min_abs_hp_distance(Some(2), Some(-2)), Some(2));
+
+        // Only one distance available
+        assert_eq!(min_abs_hp_distance(Some(5), None), Some(5));
+        assert_eq!(min_abs_hp_distance(None, Some(-3)), Some(-3));
+
+        // No distances available
+        assert_eq!(min_abs_hp_distance(None, None), None);
     }
 
     #[test]

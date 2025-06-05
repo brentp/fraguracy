@@ -89,12 +89,17 @@ fn write_indel_errors(counts: &InnerCounts, output_prefix: PathBuf, chroms: Vec<
         .write_all(b"#chrom\tstart\tend\tcount\tlength\tbq_bin\n")
         .expect("error writing header");
 
-    for ((pos, len), cnt) in counts.indel_error_positions.iter().sorted() {
+    for ((pos, len, hp_dist), cnt) in counts.indel_error_positions.iter().sorted() {
         let chrom = &chroms[pos.tid as usize];
         let position = pos.pos;
         let bq_bin = crate::fraguracy::Q_LOOKUP[pos.bq_bin as usize];
         let end = position as i64 + (if *len > 0 { *len } else { 1 }) as i64;
-        let line = format!("{chrom}\t{position}\t{end}\t{cnt}\t{len}\t{bq_bin}\n");
+        let hp_dist_str = if *hp_dist == crate::fraguracy::MAX_HP_DIST + 1 {
+            "NA".to_string()
+        } else {
+            hp_dist.to_string()
+        };
+        let line = format!("{chrom}\t{position}\t{end}\t{cnt}\t{len}\t{bq_bin}\t{hp_dist_str}\n");
         errfh
             .write_all(line.as_bytes())
             .expect("error writing to indel-error file");

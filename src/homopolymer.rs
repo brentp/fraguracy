@@ -30,6 +30,10 @@ pub(crate) fn hp_distance(
     _strand: i8,
 ) -> Option<i16> {
     let mut dist: Option<i16> = None;
+    if pos < read_start || pos > read_stop {
+        return dist;
+    }
+
     // strand will be 1 for forward, -1 for reverse
     for hp in hps.map(|hps| hps.iter()).unwrap_or_default() {
         // first we check if the hp is within 3 bases of the read start or stop.
@@ -46,7 +50,13 @@ pub(crate) fn hp_distance(
             continue;
         }
 
-        assert!(pos >= read_start && pos <= read_stop);
+        assert!(
+            pos >= read_start && pos <= read_stop,
+            "pos: {}, read_start: {}, read_stop: {}",
+            pos,
+            read_start,
+            read_stop
+        );
 
         let d = if pos < hp.start {
             hp.start as i64 - pos as i64

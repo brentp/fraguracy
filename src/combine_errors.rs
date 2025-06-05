@@ -21,6 +21,7 @@ struct Interval {
     end: u32,
     group: u8,
     length: i32,
+    hp_dist: i16,
     count: [u32; 7],
     file_i: u32,
 }
@@ -151,7 +152,7 @@ fn parse_bed_line(
                 .unwrap_or_else(|| panic!("unknown bq bin: {}", toks[3]))),
             length: 0,
             count: [0; 7],
-
+            hp_dist: i16::MAX,
             file_i,
         };
         // toks[4] is the total count, which we don't need. because we can sum the count from toks[5]
@@ -185,6 +186,7 @@ fn parse_bed_line(
                 .unwrap_or_else(|| panic!("unknown bq bin: {}", toks[5])),
             count: [0; 7],
             length: str::parse::<i32>(toks[4])?,
+            hp_dist: str::parse::<i16>(toks[6]).unwrap_or(crate::fraguracy::MAX_HP_DIST + 1),
             file_i,
         };
         // store the count in the first position for indels.
@@ -298,14 +300,14 @@ pub(crate) fn combine_errors_main(
 
     if all_indels && !output_path.ends_with("indel-errors.bed.gz") {
         log::warn!("all indels, but output path does not end with 'indel-errors.bed.gz'. renaming");
-        output_path = output_path.replace(".bed.gz", "indel-errors.bed.gz");
+        output_path = output_path.replace(".bed.gz", ".indel-errors.bed.gz");
     }
 
     let mut writer =
         bgzf::Writer::from_path(&output_path).expect("error creating bgzip output file");
 
     if all_indels {
-        writer.write_all(b"#chrom\tstart\tend\t\tcount\tlength\tbq_bin\tn_samples\n")?;
+        writer.write_all(b"#chrom\tstart\tend\tcount\tlength\tbq_bin\thp_dist\tn_samples\n")?;
     } else {
         writer.write_all(b"#chrom\tstart\tend\tbq_bin\tcount\tcontexts\tn_samples\n")?;
     }
@@ -324,13 +326,18 @@ pub(crate) fn combine_errors_main(
 
         let line = if all_indels {
             format!(
-                "{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
                 iv.chrom,
                 iv.start,
                 iv.end,
                 iv.count[0],
                 iv.length,
                 fraguracy::Q_LOOKUP[iv.group as usize],
+                if iv.hp_dist == crate::fraguracy::MAX_HP_DIST + 1 {
+                    "NA".to_string()
+                } else {
+                    iv.hp_dist.to_string()
+                },
                 n
             )
         } else {
