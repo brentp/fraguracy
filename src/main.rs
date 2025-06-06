@@ -175,7 +175,7 @@ enum Commands {
         #[arg(
             short,
             long,
-            help = "do not calculate denominator. This can shorten runtime.",
+            help = "do not calculate denominator. This can shorten runtime but will also skip the homopolymer distance calculation.",
             default_value_t = false
         )]
         no_denominator: bool,

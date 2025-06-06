@@ -124,6 +124,8 @@ Options:
 The output is a single file with the error counts from each sample summed. And an additional column indicating the
 number of samples that containing the error is reported.
 
+> ⚠️ **Warning**: You must send either indel error files or snp error files, not both!
+
 ## Bins
 
 The aim is to create a model of errors. Many factors can be predictive of the likelihood of an error.

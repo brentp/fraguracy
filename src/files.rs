@@ -86,7 +86,7 @@ fn write_indel_errors(counts: &InnerCounts, output_prefix: PathBuf, chroms: Vec<
     let mut errfh = bgzf::Writer::from_path(&path).expect("error opening bgzip file!");
 
     errfh
-        .write_all(b"#chrom\tstart\tend\tcount\tlength\tbq_bin\n")
+        .write_all(b"#chrom\tstart\tend\tcount\tlength\tbq_bin\thp_dist\n")
         .expect("error writing header");
 
     for ((pos, len, hp_dist), cnt) in counts.indel_error_positions.iter().sorted() {
