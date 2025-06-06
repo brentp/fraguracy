@@ -189,3 +189,15 @@ ops=["first", "first"]
 
 vcfanno conf.toml $vcf > annotated.vcf # annotated.vcf will have entries for `frag_bq_bin` and `frag_errors` where there was an error found that was also a variant in the VCF.
 ```
+
+## indel errors
+
+A command like: `fraguracy extract -f $fasta -o $prefix $bam` will create the files needed to evaluate the indel error rate. To plot it, then use:
+
+```
+python scripts/analyze_indel_errors.py ${prefix}-indel-errors.bed.gz ${prefix}-counts.txt
+```
+
+Which will make a plot like this one:
+
+![Image](https://github.com/user-attachments/assets/35c10634-a54b-48a2-9c5f-2c6363def26f)
