@@ -6,6 +6,7 @@ Analyze indel error rates from fraguracy output files.
 import polars as pl
 import plotly.express as px
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import numpy as np
 import gzip
 import argparse
@@ -26,14 +27,22 @@ def read_indel_errors(filepath):
     header_line = None
     data_lines = []
     for line in lines:
-        if line.startswith('#'):
-            header_line = line[1:].strip()  # Remove # and whitespace
+        # Ensure line is a string
+        if isinstance(line, bytes):
+            line_str = line.decode('utf-8')
         else:
-            data_lines.append(line.strip())
+            line_str = str(line)
+        
+        if line_str.startswith('#'):
+            header_line = line_str[1:].strip()  # Remove # and whitespace
+        else:
+            data_lines.append(line_str.strip())
     
     # Create a temporary file-like object with header and data
     import io
-    csv_content = header_line + '\n' + '\n'.join(data_lines)
+    if header_line is None:
+        raise ValueError("No header line found in input file")
+    csv_content = str(header_line) + '\n' + '\n'.join(data_lines)
     
     df = pl.read_csv(io.StringIO(csv_content), separator='\t', ignore_errors=True, 
                    null_values=['NA', 'N/A', ''], infer_schema_length=10000)
@@ -87,7 +96,7 @@ def calculate_error_rates(indel_df, counts_df):
     return merged
 
 def create_plot(df, connect_lines=False):
-    """Create interactive plot with hp_dist on x-axis, error rate on y-axis, colored by indel length"""
+    """Create interactive subplot with hp_dist vs error rate and indel length vs error rate"""
     
     # Aggregate indel lengths: group lengths > 3 and < -3 into single categories
     df_plot = df.with_columns([
@@ -99,15 +108,49 @@ def create_plot(df, connect_lines=False):
         .alias('length_category')
     ])
     
+    # Data for first subplot: aggregate by length_category, bq_bin, hp_dist
+    df_hp_plot = df_plot.group_by(['length_category', 'bq_bin', 'hp_dist']).agg([
+        pl.col('indel_count').sum().alias('indel_count'),
+        pl.col('total_count').first().alias('total_count')  # total_count should be the same for same bq_bin/hp_dist
+    ]).with_columns([
+        (pl.col('indel_count') / pl.col('total_count')).alias('error_rate')
+    ])
+    
+    # Data for second subplot: aggregate by length_category and bq_bin only (sum across all hp_dists)
+    df_length_plot = df_plot.group_by(['length_category', 'bq_bin']).agg([
+        pl.col('indel_count').sum().alias('indel_count'),
+        pl.col('total_count').sum().alias('total_count')  # sum total_count across hp_dists
+    ]).with_columns([
+        (pl.col('indel_count') / pl.col('total_count')).alias('error_rate')
+    ])
+    
     # Get unique values for filtering
-    unique_bq_bins = sorted(df_plot.select('bq_bin').unique().to_numpy().flatten())
-    unique_categories = sorted(df_plot.select('length_category').unique().to_numpy().flatten())
+    unique_bq_bins = sorted(df_hp_plot.select('bq_bin').unique().to_numpy().flatten())
+    
+    # Sort length categories in logical numerical order
+    def sort_length_categories(categories):
+        """Sort length categories in logical order: <-3, -3, -2, -1, 1, 2, 3, >3"""
+        def category_sort_key(cat):
+            if cat == '<-3':
+                return -1000  # Sort first
+            elif cat == '>3':
+                return 1000   # Sort last
+            else:
+                return int(cat)  # Sort numerically for individual lengths
+        
+        return sorted(categories, key=category_sort_key)
+    
+    unique_categories = sort_length_categories(df_hp_plot.select('length_category').unique().to_numpy().flatten())
     
     print(f"Available BQ bins: {unique_bq_bins}")
     print(f"Length categories: {unique_categories}")
     
-    # Create plotly figure
-    fig = go.Figure()
+    # Create subplot figure
+    fig = make_subplots(
+        rows=2, cols=1,
+        subplot_titles=('Error Rate by Homopolymer Distance', 'Error Rate by Indel Length'),
+        vertical_spacing=0.15
+    )
     
     # Color palette
     colors = px.colors.qualitative.Set1
@@ -115,10 +158,11 @@ def create_plot(df, connect_lines=False):
     # Create traces for each combination of length_category and bq_bin
     trace_info = []
     
+    # First subplot: HP Distance vs Error Rate
     for i, category in enumerate(unique_categories):
         for j, bq_bin in enumerate(unique_bq_bins):
             # Filter data for this combination
-            df_subset = df_plot.filter(
+            df_subset = df_hp_plot.filter(
                 (pl.col('length_category') == category) & 
                 (pl.col('bq_bin') == bq_bin)
             )
@@ -154,6 +198,7 @@ def create_plot(df, connect_lines=False):
                 mode=mode,
                 name=trace_name,
                 visible=visible,
+                legendgroup=category,  # Group traces by category for consistent legend
                 marker=dict(
                     color=colors[i % len(colors)],
                     size=6,
@@ -177,19 +222,81 @@ def create_plot(df, connect_lines=False):
                     '<b>Total Count:</b> %{customdata[1]}<br>' +
                     '<extra></extra>'
                 )
-            ))
+            ), row=1, col=1)
             
             trace_info.append({
                 'bq_bin': bq_bin,
                 'category': category,
-                'trace_idx': len(fig.data) - 1
+                'trace_idx': len(list(fig.data)) - 1,
+                'subplot': 'hp_dist'
+            })
+    
+    # Second subplot: Indel Length vs Error Rate  
+    for i, category in enumerate(unique_categories):
+        for j, bq_bin in enumerate(unique_bq_bins):
+            # Filter data for this combination
+            df_subset = df_length_plot.filter(
+                (pl.col('length_category') == category) & 
+                (pl.col('bq_bin') == bq_bin)
+            )
+            
+            if df_subset.height == 0:
+                continue  # Skip empty combinations
+            
+            # Convert to numpy arrays
+            error_rate = df_subset.select('error_rate').to_numpy().flatten()[0]
+            indel_count = df_subset.select('indel_count').to_numpy().flatten()[0]
+            total_count = df_subset.select('total_count').to_numpy().flatten()[0]
+            
+            # Determine visibility (default to 37-59 only)
+            visible = True if bq_bin == '37-59' else False
+            
+            # For x-axis position, convert category to numeric value for plotting
+            if category == '<-3':
+                x_pos = -4
+            elif category == '>3':
+                x_pos = 4
+            else:
+                x_pos = int(category)
+            
+            trace_name = f'{category} (BQ: {bq_bin})'
+            
+            fig.add_trace(go.Scatter(
+                x=[x_pos],
+                y=[error_rate],
+                mode='markers',
+                name=trace_name,  # Use same name to group in legend
+                visible=visible,
+                legendgroup=category,  # Group with first subplot traces
+                showlegend=False,  # Don't show duplicate legend entries
+                marker=dict(
+                    color=colors[i % len(colors)],
+                    size=8,
+                    opacity=0.7
+                ),
+                customdata=np.array([[indel_count, total_count, bq_bin]]),
+                hovertemplate=(
+                    '<b>Indel Length:</b> ' + category + '<br>' +
+                    '<b>BQ Bin:</b> ' + bq_bin + '<br>' +
+                    '<b>Error Rate:</b> %{y:.2e}<br>' +
+                    '<b>Indel Count:</b> %{customdata[0]}<br>' +
+                    '<b>Total Count:</b> %{customdata[1]}<br>' +
+                    '<extra></extra>'
+                )
+            ), row=2, col=1)
+            
+            trace_info.append({
+                'bq_bin': bq_bin,
+                'category': category,
+                'trace_idx': len(list(fig.data)) - 1,
+                'subplot': 'length'
             })
     
     # Create buttons for BQ bin selection
     buttons = []
     
     # Add "All" button
-    all_visible = [True] * len(fig.data)
+    all_visible = [True] * len(list(fig.data))
     buttons.append(dict(
         label="All BQ Bins",
         method="update",
@@ -202,31 +309,20 @@ def create_plot(df, connect_lines=False):
         for trace in trace_info:
             visible_list.append(trace['bq_bin'] == bq_bin)
         
+        # Mark 37-59 as default
+        label = f"BQ: {bq_bin} (default)" if bq_bin == '37-59' else f"BQ: {bq_bin}"
+        
         buttons.append(dict(
-            label=f"BQ: {bq_bin}",
+            label=label,
             method="update", 
             args=[{"visible": visible_list}]
         ))
     
-    # Add combinations button (default view)
-    default_visible = []
-    for trace in trace_info:
-        default_visible.append(trace['bq_bin'] == '37-59')
-    
-    buttons.insert(1, dict(
-        label="BQ: 37-59 (default)",
-        method="update",
-        args=[{"visible": default_visible}]
-    ))
-    
     # Update layout with BQ bin selector
     fig.update_layout(
-        title='Indel Error Rate by Homopolymer Distance and Indel Length',
-        xaxis_title='Homopolymer Distance (hp_dist)',
-        yaxis_title='Indel Error Rate',
-        yaxis_type='log',
-        width=1100,
-        height=650,
+        title='Indel Error Rate Analysis',
+        width=1000,
+        height=900,
         template='plotly_white',
         legend=dict(
             title="Indel Length",
@@ -249,16 +345,27 @@ def create_plot(df, connect_lines=False):
                 yanchor="top"
             ),
         ],
-        annotations=[
-            dict(text="BQ Bin Filter:", showarrow=False,
-                 x=0.01, y=1.08, yref="paper", align="left", 
-                 font=dict(size=12, color="black"))
-        ]
+        
+        #annotations=[
+        #    dict(text="BQ Bin Filter:", showarrow=False,
+        #         x=0.01, y=1.02, yref="paper", align="left", 
+        #         font=dict(size=11, color="black"))
+        #]
     )
     
-    # Add grid
-    fig.update_xaxes(showgrid=True, gridwidth=1, gridcolor='lightgray')
-    fig.update_yaxes(showgrid=True, gridwidth=1, gridcolor='lightgray')
+    # Update subplot axes
+    fig.update_xaxes(title_text="Homopolymer Distance (hp_dist)", showgrid=True, gridwidth=1, gridcolor='lightgray', row=1, col=1)
+    fig.update_yaxes(title_text="Indel Error Rate", type='log', showgrid=True, gridwidth=1, gridcolor='lightgray', row=1, col=1)
+    
+    fig.update_xaxes(title_text="Indel Length", showgrid=True, gridwidth=1, gridcolor='lightgray', row=2, col=1)
+    fig.update_yaxes(title_text="Indel Error Rate", type='log', showgrid=True, gridwidth=1, gridcolor='lightgray', row=2, col=1)
+    
+    # Set custom x-axis labels for second subplot
+    fig.update_xaxes(
+        tickvals=[-4, -3, -2, -1, 1, 2, 3, 4],
+        ticktext=['<-3', '-3', '-2', '-1', '1', '2', '3', '>3'],
+        row=2, col=1
+    )
     
     return fig
 
