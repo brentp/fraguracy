@@ -81,7 +81,9 @@ Options:
   -e, --exclude-regions <EXCLUDE_REGIONS>
           exclude from analysis the regions given in this BED file
   -l, --lua-expression <LUA_EXPRESSION>
-          optional lua expression to filter reads. returns true to skip read. e.g. 'return read.flags.secondary or read.flags.supplementary'.
+          optional lua expression to filter reads (once per overlapping pair). returns true to skip pair. e.g. 'return read.flags.secondary or read.flags.supplementary'.
+  -L, --lua-base-expression <LUA_BASE_EXPRESSION>
+          optional per-base lua expression (evaluated only if -l passes). has access to `read` and `base` (qpos, bq, gpos, distance_from_5prime, distance_from_3prime, base, is_indel, indel_length). returns true to skip base.
   -m, --max-read-length <MAX_READ_LENGTH>
           indicate the maximum read length in the alignment file [default: 151]
   -b, --bin-size <BIN_SIZE>
@@ -102,8 +104,32 @@ Options:
 
 ### Lua Expressions
 
-The `extract` sub-command allows lua expressions with `-l` that indicate whether to skip a read. See [lua-api.md](lua-api.md) for a full description
-of how to use this.
+The `extract` sub-command supports two Lua filter expressions (returning `true` to skip):
+
+- `-l` / `--lua-expression`: Evaluated once per overlapping read pair with access to `read`. Returning `true` for either mate skips the entire pair.
+- `-L` / `--lua-base-expression`: Evaluated per overlapping base (and indel) **only when `-l` passes**, with access to `base` and `read`. For base positions, returning `true` for either mate skips that position; for indel errors, it is evaluated only on the mate carrying the indel (`base.is_indel == true`).
+
+Available fields on `base`:
+
+- `base.qpos`: 0-based query position in the read (for deletions, the query position of the base immediately following the deletion)
+- `base.gpos`: 0-based genomic position
+- `base.bq`: Phred base quality at `base.qpos` (for indels, the reported indel quality: the lower of the indel-carrying mate's quality at `base.qpos` and the next indel on the other mate if one exists)
+- `base.distance_from_5prime`: 0-based distance from the 5' end of the read (`0` at 5' end)
+- `base.distance_from_3prime`: 0-based distance from the 3' end of the read (`0` at 3' end)
+- `base.base`: Base call at `base.qpos` (`"A"`, `"C"`, `"G"`, `"T"`, `"N"`)
+- `base.is_indel`: `true` when evaluating an indel error (evaluated on the mate carrying the indel), `false` for base positions
+- `base.indel_length`: `0` for base positions, positive for insertions, negative for deletions
+
+Keep read-level predicates in `-l` and position-specific predicates in `-L` so you only pay the per-base evaluation cost when needed (expressions that use only `base.*` run in a fast chunk-batched Luau loop).
+
+```bash
+fraguracy extract -f $reference \
+  -l 'return read.average_base_quality < 20' \
+  -L 'return base.distance_from_3prime < 5 or base.bq < 15' \
+  $sample.bam
+```
+
+See [lua-api.md](lua-api.md) for the full `read`, `flags`, and `base` API reference.
 
 ### Combine
 

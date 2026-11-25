@@ -4,7 +4,7 @@ use std::string::String;
 use flate2::bufread::GzDecoder;
 use itertools::Itertools;
 use std::fs::File;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, BufWriter};
 use std::path::PathBuf;
 
 use rust_htslib::bgzf;
@@ -15,7 +15,7 @@ pub(crate) type Iv = rust_lapper::Interval<u32, u8>;
 pub(crate) fn write_stats(stats: Vec<Stat>, output_prefix: PathBuf) {
     let header = Stat::header();
 
-    let mut fh = std::fs::File::create(
+    let fh = std::fs::File::create(
         output_prefix
             .to_str()
             .expect("error getting output prefix")
@@ -23,11 +23,13 @@ pub(crate) fn write_stats(stats: Vec<Stat>, output_prefix: PathBuf) {
             + "counts.txt",
     )
     .expect("error opening file!");
+    let mut fh = BufWriter::with_capacity(64 * 1024, fh);
 
     writeln!(fh, "{header}").expect("error writing to file");
     stats
         .iter()
         .for_each(|s| writeln!(fh, "{s}").expect("error writing to file"));
+    fh.flush().expect("error flushing counts file");
 }
 
 pub(crate) fn format_context_counts(counts: [u32; 7]) -> (u32, String) {
@@ -107,12 +109,13 @@ fn write_indel_errors(counts: &InnerCounts, output_prefix: PathBuf, chroms: Vec<
 }
 
 pub(crate) fn open_file(path: Option<PathBuf>) -> Option<Box<dyn BufRead>> {
-    let file = File::open(path.as_ref().unwrap());
-    if file.is_err() {
-        eprintln!("error opening file: {}", file.unwrap_err());
-        return None;
-    }
-    let file = file.unwrap();
+    let file = match File::open(path.as_ref().unwrap()) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("error opening file: {e}");
+            return None;
+        }
+    };
 
     // Check if it's a bgzip file
     let mut buf_file = BufReader::new(file);

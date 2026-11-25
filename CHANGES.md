@@ -1,3 +1,6 @@
+# v0.3.0
++ major speed improvements and support `base` variable in lua.
+
 # v0.2.7
 + indels: report length and bq-bin and add scripts/analyze-indel-errors.py to plot indel error rate
 + combine_counts: better error messages and handle NA

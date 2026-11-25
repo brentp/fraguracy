@@ -1,24 +1,20 @@
 use bpci::*;
 use ndarray::prelude::Array;
 use ndarray::Array6;
-use rust_htslib::{
-    bam::{
-        record::{Cigar, CigarStringView},
-        IndexedReader, Read, Record,
-    },
-    bgzf::CompressionLevel,
+use rust_htslib::bam::{
+    record::{Cigar, CigarStringView},
+    IndexedReader, Record,
 };
-use rust_htslib::{bgzf, faidx};
 use rust_lapper::Lapper;
-use std::collections::BTreeMap;
+use rustc_hash::FxHashMap;
 
+use crate::depth::DepthTracker;
 use crate::homopolymer as hp;
+use crate::lua::{BasePos, ChunkEval, ChunkSkip, LuaFilter, BASE_IN_READ_EXPR_ERR};
+use crate::pileup::PileupWindow;
 use std::collections::HashMap;
 use std::fmt;
 use std::hash::Hash;
-use std::io::Write;
-use std::rc::Rc;
-use std::str;
 
 #[derive(Eq, Hash, PartialEq, Ord, PartialOrd)]
 pub(crate) struct Position {
@@ -27,11 +23,55 @@ pub(crate) struct Position {
     pub bq_bin: u8,
 }
 
-/// DepthMap is for a given genome position, the depth at each (aq, bq) pair.
-type DepthMap = HashMap<(u8, u8), u32>;
 type Length = i32;
 
 pub(crate) const MAX_HP_DIST: i16 = 15;
+const HP_BINS: usize = (2 * MAX_HP_DIST + 2) as usize; // 32
+const NO_HP_BIN: usize = HP_BINS - 1; // 31 = "NA"
+const CNTS_BIN_STRIDE: usize = 5 * 2 * HP_BINS; // 320
+
+/// BAM 4-bit nucleotide encoding (`=ACMGRSVTWYHKDBN`) -> collapsed 2-base context:
+/// A(1)/T(8) -> 0, C(2)/G(4) -> 1, anything else -> 2.
+/// Lets the hot matching-base path avoid ASCII decoding + match branching.
+const ENC_TO_CTX2: [usize; 16] = [2, 0, 1, 2, 1, 2, 2, 2, 0, 2, 2, 2, 2, 2, 2, 2];
+const ENC_TO_BASE: [u8; 16] = *b"=ACMGRSVTWYHKDBN";
+
+/// Flat C-order index into `InnerCounts::cnts` with shape
+/// `(read12: 2, rev: 2, bin: bins, bq: 5, ctx2: 2, hp_dist: 32)`:
+/// `row_base` encodes `(read12, rev)`, `bin_off` encodes `bin * 320`,
+/// `bq << 6` encodes `bq * 64`, and `ctx2 << 5` encodes `ctx2 * 32`.
+#[inline(always)]
+fn cnts_flat_idx(row_base: usize, bin_off: usize, bq: u8, ctx2: usize, hp_dist: usize) -> usize {
+    debug_assert!(bq < 5 && ctx2 < 2 && hp_dist < HP_BINS);
+    row_base + bin_off + ((bq as usize) << 6) + (ctx2 << 5) + hp_dist
+}
+
+/// Map `(true_base, error_base)` to one of the 6 canonical pyrimidine/purine-collapsed
+/// substitution contexts (or 6 for `NN`), avoiding `HashMap` lookups on mismatches.
+#[inline(always)]
+pub(crate) fn context_lookup(a: u8, b: u8) -> usize {
+    match (a, b) {
+        (b'T', b'G') | (b'A', b'C') => 0,
+        (b'T', b'C') | (b'A', b'G') => 1,
+        (b'T', b'A') | (b'A', b'T') => 2,
+        (b'C', b'A') | (b'G', b'T') => 3,
+        (b'C', b'G') | (b'G', b'C') => 4,
+        (b'C', b'T') | (b'G', b'A') => 5,
+        (b'N', b'N') => 6,
+        _ => panic!("unexpected base context pair: ({}, {})", a as char, b as char),
+    }
+}
+
+/// Fast check to skip `indel_error_pieces_with_qpos` allocations for ungapped reads.
+#[inline(always)]
+fn has_indel(cigar: &CigarStringView) -> bool {
+    if cigar.len() == 1 && matches!(cigar[0], Cigar::Match(_) | Cigar::Equal(_) | Cigar::Diff(_)) {
+        return false;
+    }
+    cigar
+        .iter()
+        .any(|op| matches!(op, Cigar::Ins(_) | Cigar::Del(_)))
+}
 
 /// Returns the homopolymer distance with the minimum absolute value.
 /// If both distances are available, returns the one with smaller absolute value.
@@ -52,13 +92,145 @@ fn min_abs_hp_distance(dist_a: Option<i16>, dist_b: Option<i16>) -> Option<i16> 
     }
 }
 
+/// Result of checking a genomic overlap chunk `[g0, g1)` once against an include or exclude tree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ChunkFilter {
+    /// Every base in the chunk passes (no per-base check needed).
+    PassAll,
+    /// Every base in the chunk is filtered out (skip the entire chunk).
+    SkipAll,
+    /// Only part of the chunk overlaps; walk the merged sorted intervals with a cursor.
+    Partial,
+}
+
+/// Chunk-level include/exclude region filter backed by a reusable sorted, merged interval buffer
+/// and a monotonic per-base cursor.
+struct RegionFilter {
+    mode: ChunkFilter,
+    ivs: Vec<(u32, u32)>,
+    cursor: usize,
+    include: bool,
+}
+
+impl RegionFilter {
+    fn new(include: bool) -> Self {
+        Self {
+            mode: ChunkFilter::PassAll,
+            ivs: Vec::new(),
+            cursor: 0,
+            include,
+        }
+    }
+
+    /// Query `tree` once for chunk `[g0, g1)` and cache merged intervals if partially overlapping.
+    fn prepare(&mut self, tree: Option<&Lapper<u32, u8>>, g0: u32, g1: u32) -> ChunkFilter {
+        self.cursor = 0;
+        let Some(t) = tree else {
+            self.mode = ChunkFilter::PassAll;
+            return self.mode;
+        };
+        let (on_empty, on_full) = if self.include {
+            (ChunkFilter::SkipAll, ChunkFilter::PassAll)
+        } else {
+            (ChunkFilter::PassAll, ChunkFilter::SkipAll)
+        };
+        let mut iter = t.find(g0, g1);
+        let Some(first) = iter.next() else {
+            self.mode = on_empty;
+            return self.mode;
+        };
+        if first.start <= g0 && first.stop >= g1 {
+            self.mode = on_full;
+            return self.mode;
+        }
+        self.ivs.clear();
+        self.ivs.push((first.start, first.stop));
+        for iv in iter {
+            // Merge overlapping/bookended intervals so the per-base cursor advances monotonically.
+            if let Some(last) = self.ivs.last_mut() {
+                if iv.start <= last.1 {
+                    last.1 = last.1.max(iv.stop);
+                    continue;
+                }
+            }
+            self.ivs.push((iv.start, iv.stop));
+        }
+        self.mode = if self.ivs.len() == 1 && self.ivs[0].0 <= g0 && self.ivs[0].1 >= g1 {
+            on_full
+        } else {
+            ChunkFilter::Partial
+        };
+        self.mode
+    }
+
+    /// Return whether monotonically increasing genomic coordinate `pos` passes this filter.
+    #[inline(always)]
+    fn passes(&mut self, pos: u32) -> bool {
+        if self.mode != ChunkFilter::Partial {
+            return true;
+        }
+        while self.cursor < self.ivs.len() && self.ivs[self.cursor].1 <= pos {
+            self.cursor += 1;
+        }
+        let in_iv = self.cursor < self.ivs.len() && pos >= self.ivs[self.cursor].0;
+        in_iv == self.include
+    }
+}
+
+/// Per-chromosome state updated once on chromosome boundaries in `process_bam`.
+pub(crate) struct ChromCtx<'a> {
+    pub(crate) chrom: &'a str,
+    pub(crate) chrom_seq: Option<Vec<u8>>,
+    pub(crate) include_tree: Option<&'a Lapper<u32, u8>>,
+    pub(crate) exclude_tree: Option<&'a Lapper<u32, u8>>,
+    pub(crate) hp_tree: Option<Lapper<u32, u8>>,
+}
+
+struct Mate {
+    start: u32,
+    end: u32,
+    strand: i8,
+    read12: usize,
+    rev_idx: usize,
+    row_base: usize,
+}
+
+impl Mate {
+    #[inline(always)]
+    fn new(r: &Record, cigar: &CigarStringView, bins: usize) -> Self {
+        let is_rev = r.is_reverse();
+        let read12 = 1 - r.is_first_in_template() as usize;
+        let rev_idx = is_rev as usize;
+        Self {
+            start: r.pos() as u32,
+            end: cigar.end_pos() as u32,
+            strand: if is_rev { -1 } else { 1 },
+            read12,
+            rev_idx,
+            row_base: (read12 * 2 + rev_idx) * bins * CNTS_BIN_STRIDE,
+        }
+    }
+}
+
 pub(crate) struct Counts {
-    pub(crate) ibam: Option<IndexedReader>,
+    pub(crate) pileup: Option<PileupWindow>,
     //  read, f/r pos, bq, bp, ctx{6} */
     pub(crate) counts: InnerCounts,
-    pub(crate) depth: BTreeMap<u32, DepthMap>,
-    pub(crate) last_depth_entry: Option<(String, u32, u32, String, String, u32)>,
-    pub(crate) depth_writer: Option<bgzf::Writer>,
+    pub(crate) depth: Option<DepthTracker>,
+    min_base_qual: u8,
+    min_map_qual: u8,
+    bin_size: u32,
+    lua_filter: Option<LuaFilter>,
+    logged_read_err: bool,
+    logged_base_err: bool,
+    /// Precomputed `(qpos / bin_size) * CNTS_BIN_STRIDE` lookup table (avoids hardware `div` per base).
+    bin_off_table: Vec<usize>,
+    base_skip_mask: Vec<u8>,
+    a_seq_scratch: Vec<u8>,
+    b_seq_scratch: Vec<u8>,
+    pieces_scratch: Vec<[Coordinates; 3]>,
+    inc_filter: RegionFilter,
+    exc_filter: RegionFilter,
 }
 
 pub(crate) struct InnerCounts {
@@ -70,9 +242,9 @@ pub(crate) struct InnerCounts {
     pub(crate) matches: u64,
 
     // position -> error count. nice to find sites that are error-prone.
-    pub(crate) error_positions: HashMap<Position, [u32; 7]>,
+    pub(crate) error_positions: FxHashMap<Position, [u32; 7]>,
     // position -> indel error counts
-    pub(crate) indel_error_positions: HashMap<(Position, Length, i16), u32>,
+    pub(crate) indel_error_positions: FxHashMap<(Position, Length, i16), u32>,
 }
 
 fn argmax<T: Ord>(slice: &[T]) -> Option<usize> {
@@ -229,29 +401,71 @@ impl InnerCounts {
             errs: Array::zeros((2, 2, bins, 5, 6, (2 * MAX_HP_DIST + 2) as usize)),
             mismatches: 0,
             matches: 0,
-            error_positions: HashMap::new(),
-            indel_error_positions: HashMap::new(),
+            error_positions: FxHashMap::default(),
+            indel_error_positions: FxHashMap::default(),
         }
     }
 }
 
 impl Counts {
-    pub(crate) fn new(ir: Option<IndexedReader>, bins: usize) -> Self {
+    pub(crate) fn new(
+        ir: Option<IndexedReader>,
+        bins: usize,
+        bin_size: u32,
+        min_base_qual: u8,
+        min_map_qual: u8,
+        lua_filter: Option<LuaFilter>,
+    ) -> Self {
+        let bin_off_table = (0..bins * bin_size as usize)
+            .map(|qpos| (qpos / bin_size as usize) * CNTS_BIN_STRIDE)
+            .collect();
         Counts {
-            ibam: ir,
+            pileup: ir.map(PileupWindow::new),
             counts: InnerCounts::new(bins),
-            depth: BTreeMap::new(),
-            last_depth_entry: None,
-            depth_writer: None,
+            depth: None,
+            min_base_qual,
+            min_map_qual,
+            bin_size,
+            lua_filter,
+            logged_read_err: false,
+            logged_base_err: false,
+            bin_off_table,
+            base_skip_mask: Vec::new(),
+            a_seq_scratch: Vec::new(),
+            b_seq_scratch: Vec::new(),
+            pieces_scratch: Vec::with_capacity(4),
+            inc_filter: RegionFilter::new(true),
+            exc_filter: RegionFilter::new(false),
+        }
+    }
+
+    pub(crate) fn skip_pair(&mut self, a: &Record, b: &Record) -> bool {
+        let Some(ref lf) = self.lua_filter else {
+            return false;
+        };
+        if !lf.has_read_filter() {
+            return false;
+        }
+        match lf.skip_pair(a, b) {
+            Ok(s) => s,
+            Err(e) => {
+                let msg = e.to_string();
+                if msg.contains(BASE_IN_READ_EXPR_ERR) {
+                    panic!("{msg}");
+                }
+                if !self.logged_read_err {
+                    log::error!(
+                        "error evaluating user expression for read (further errors suppressed): {e}"
+                    );
+                    self.logged_read_err = true;
+                }
+                false
+            }
         }
     }
 
     pub(crate) fn set_depth_writer(&mut self, path: &str) -> std::io::Result<()> {
-        let mut w = bgzf::Writer::from_path_with_level(path, CompressionLevel::Level(1))
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-        w.write_all(b"#chrom\tstart\tend\tread1_bq_bin\tread2_bq_bin\tpair-ovl-depth\n")
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-        self.depth_writer = Some(w);
+        self.depth = Some(DepthTracker::new(path)?);
         Ok(())
     }
 
@@ -277,198 +491,238 @@ impl Counts {
     }
 
     pub(crate) fn handle_depth(&mut self, bchrom: &str, bpos: i64) {
-        // this function clears out the BTreeMap of depth entries that are before the current position.
-        // it is not called if --no-denominator is specified.
-        // it writes out the depth entries as they are popped out of the BTreeMap.
-        loop {
-            let pos = *(self
-                .depth
-                .first_key_value()
-                .unwrap_or((&u32::MAX, &DepthMap::new()))
-                .0);
-            if pos == u32::MAX {
-                break;
-            }
-            if (pos as i64) < bpos {
-                let depthmap = self.depth.remove(&pos).unwrap();
-
-                for ((aq, bq), dp) in depthmap.iter() {
-                    let a_bin = Q_LOOKUP[*aq as usize];
-                    let b_bin = Q_LOOKUP[*bq as usize];
-
-                    match &mut self.last_depth_entry {
-                        Some((
-                            last_chrom,
-                            start_pos,
-                            last_pos,
-                            last_a_bin,
-                            last_b_bin,
-                            last_dp,
-                        )) => {
-                            if bchrom == last_chrom
-                                && a_bin == last_a_bin
-                                && b_bin == last_b_bin
-                                && dp == last_dp
-                                && *last_pos + 1 == pos
-                            {
-                                *last_pos = pos;
-                            } else {
-                                if let Some(writer) = &mut self.depth_writer {
-                                    writeln!(
-                                        writer,
-                                        "{}\t{}\t{}\t{}\t{}\t{}",
-                                        last_chrom,
-                                        start_pos,
-                                        *last_pos + 1,
-                                        last_a_bin,
-                                        last_b_bin,
-                                        last_dp
-                                    )
-                                    .expect("error writing to bgzf file");
-                                }
-
-                                self.last_depth_entry = Some((
-                                    bchrom.to_string(),
-                                    pos,
-                                    pos,
-                                    a_bin.to_string(),
-                                    b_bin.to_string(),
-                                    *dp,
-                                ));
-                            }
-                        }
-                        None => {
-                            self.last_depth_entry = Some((
-                                bchrom.to_string(),
-                                pos,
-                                pos,
-                                a_bin.to_string(),
-                                b_bin.to_string(),
-                                *dp,
-                            ));
-                        }
-                    }
-                }
-            } else {
-                break;
-            }
+        if let Some(ref mut depth) = self.depth {
+            depth.flush_before(bchrom, bpos);
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn increment<N: AsRef<str> + std::fmt::Debug>(
+    pub(crate) fn increment(
         &mut self,
-        a: Rc<Record>,
-        b: Rc<Record>,
-        min_base_qual: u8,
-        min_map_qual: u8,
-        bin_size: u32,
-        fasta: &Option<faidx::Reader>,
-        chrom: N,
-        include_tree: &Option<&Lapper<u32, u8>>,
-        exclude_tree: &Option<&Lapper<u32, u8>>,
-        hp_tree: &Option<Lapper<u32, u8>>,
+        a: &Record,
+        b: &Record,
+        a_cigar: &CigarStringView,
+        ctx: &ChromCtx<'_>,
     ) {
-        let pieces = overlap_pieces(&a.cigar(), &b.cigar(), a.qual(), b.qual(), true);
-        if pieces.is_empty() {
+        let b_cigar = b.cigar();
+        let a_qual = a.qual();
+        let b_qual = b.qual();
+        overlap_pieces_into(
+            a_cigar,
+            &b_cigar,
+            a_qual,
+            b_qual,
+            true,
+            &mut self.pieces_scratch,
+        );
+        if self.pieces_scratch.is_empty() {
             return;
         }
         let a_seq = a.seq();
         let b_seq = b.seq();
-        if a_seq.len() / bin_size as usize >= self.counts.cnts.dim().2 {
+        let bins = self.counts.cnts.dim().2;
+        let max_len = a_seq.len().max(b_seq.len());
+        if max_len / self.bin_size as usize >= bins {
             panic!(
                 "index out of bounds: specify a --max-read-length of at least {}",
-                a_seq.len()
-            )
+                max_len
+            );
         }
 
-        if b_seq.len() / bin_size as usize >= self.counts.cnts.dim().2 {
-            panic!(
-                "index out of bounds: specify a --max-read-length of at least {}",
-                b_seq.len()
-            )
+        let ma = Mate::new(a, a_cigar, bins);
+        let mb = Mate::new(b, &b_cigar, bins);
+        let min_base_qual = self.min_base_qual;
+        let min_map_qual = self.min_map_qual;
+        let bin_size = self.bin_size;
+
+        if has_indel(a_cigar) || has_indel(&b_cigar) {
+            let indel_errors =
+                indel_error_pieces_with_qpos(a_cigar, &b_cigar, a_qual, b_qual, min_base_qual);
+            for ie in &indel_errors {
+                let c = &ie.coord;
+                // include the event if any of it overlaps with the include tree.
+                if let Some(t) = ctx.include_tree {
+                    if t.count(c.start, c.stop) == 0 {
+                        continue;
+                    }
+                }
+                // exclude the event if any of it overlaps with the exclude tree.
+                if let Some(t) = ctx.exclude_tree {
+                    if t.count(c.start, c.stop) != 0 {
+                        continue;
+                    }
+                }
+
+                let len = match c.indel_type {
+                    IndelType::Insertion(len) => len as i32,
+                    IndelType::Deletion(len) => -(len as i32),
+                    IndelType::NotIndel => 0,
+                };
+
+                if let Some(lf) = self.lua_filter.as_ref().filter(|lf| lf.has_base_filter()) {
+                    let (rec, seq) = if ie.from_a { (a, &a_seq) } else { (b, &b_seq) };
+                    let base_byte = if ie.qpos < seq.len() { seq[ie.qpos] } else { 0 };
+                    match lf.skip_base(
+                        rec,
+                        BasePos {
+                            qpos: ie.qpos,
+                            gpos: c.start,
+                            seq_len: seq.len(),
+                            bq: c.qual,
+                            base: base_byte,
+                            is_reverse: rec.is_reverse(),
+                            is_indel: true,
+                            indel_length: len,
+                        },
+                    ) {
+                        Ok(true) => continue,
+                        Ok(false) => (),
+                        Err(e) => {
+                            if !self.logged_base_err {
+                                log::error!(
+                                    "error evaluating base lua expression for indel (further errors suppressed): {e}"
+                                );
+                                self.logged_base_err = true;
+                            }
+                        }
+                    }
+                }
+
+                let p = Position {
+                    tid: a.tid() as u16,
+                    pos: c.start,
+                    bq_bin: Counts::qual_to_bin(c.qual),
+                };
+
+                let hps = ctx.hp_tree.as_ref().map(|t| {
+                    t.find(
+                        c.start.max(MAX_HP_DIST as u32) - MAX_HP_DIST as u32,
+                        c.stop + MAX_HP_DIST as u32,
+                    )
+                    .collect::<Vec<_>>()
+                });
+
+                let hp_dist_a =
+                    hp::hp_distance(hps.as_deref(), c.start, ma.start, ma.end, ma.strand);
+                let hp_dist_b =
+                    hp::hp_distance(hps.as_deref(), c.start, mb.start, mb.end, mb.strand);
+                let indel_hp_dist =
+                    min_abs_hp_distance(hp_dist_a, hp_dist_b).unwrap_or(MAX_HP_DIST + 1);
+
+                *self
+                    .counts
+                    .indel_error_positions
+                    .entry((p, len, indel_hp_dist))
+                    .or_insert(0) += 1;
+            }
         }
-
-        let a_qual = a.qual();
-        let b_qual = b.qual();
-
-        let indel_errors =
-            indel_error_pieces(&a.cigar(), &b.cigar(), a_qual, b_qual, min_base_qual);
-        indel_errors.iter().for_each(|c: &Coordinates| {
-            // include the event if any of it overlaps with the include tree.
-            if let Some(t) = include_tree {
-                if t.count(c.start, c.stop) == 0 {
-                    return;
-                }
-            }
-            // exclude the event if any of it overlaps with the exclude tree.
-            if let Some(t) = exclude_tree {
-                if t.count(c.start, c.stop) != 0 {
-                    return;
-                }
-            }
-
-            let len = match c.indel_type {
-                IndelType::Insertion(len) => len as i32,
-                IndelType::Deletion(len) => -(len as i32),
-                IndelType::NotIndel => 0,
-            };
-
-            let p = Position {
-                tid: a.tid() as u16,
-                pos: c.start,
-                bq_bin: Counts::qual_to_bin(c.qual),
-            };
-
-            let hps = hp_tree.as_ref().map(|t| {
-                t.find(
-                    c.start.max(MAX_HP_DIST as u32) - MAX_HP_DIST as u32,
-                    c.stop + MAX_HP_DIST as u32,
-                )
-                .collect::<Vec<_>>()
-            });
-
-            let hp_dist_a = hp::hp_distance(
-                hps.as_deref(),
-                c.start,
-                a.pos() as u32,
-                a.cigar().end_pos() as u32,
-                if a.is_reverse() { -1 } else { 1 },
-            );
-
-            let hp_dist_b = hp::hp_distance(
-                hps.as_deref(),
-                c.start,
-                b.pos() as u32,
-                b.cigar().end_pos() as u32,
-                if b.is_reverse() { -1 } else { 1 },
-            );
-
-            let indel_hp_dist =
-                min_abs_hp_distance(hp_dist_a, hp_dist_b).unwrap_or(MAX_HP_DIST + 1 as i16);
-
-            *self
-                .counts
-                .indel_error_positions
-                .entry((p, len, indel_hp_dist))
-                .or_insert(0) += 1;
-        });
 
         let mut genome_pos = u32::MAX;
-        for [a_chunk, b_chunk, g_chunk] in pieces {
+        // Take `pieces_scratch` out so we can borrow other `self` fields freely inside the loop,
+        // then put it back to preserve its heap capacity across pairs.
+        let pieces = std::mem::take(&mut self.pieces_scratch);
+        debug_assert_eq!(
+            self.counts.cnts.strides(),
+            &[
+                (2 * bins * CNTS_BIN_STRIDE) as isize,
+                (bins * CNTS_BIN_STRIDE) as isize,
+                CNTS_BIN_STRIDE as isize,
+                64,
+                32,
+                1,
+            ]
+        );
+        // Hoist `cnts.as_slice_mut()` outside the loops so ndarray's 6D layout check runs once per pair.
+        let cnts_slice = self.counts.cnts.as_slice_mut().unwrap();
+        let bin_off_table = &self.bin_off_table;
+
+        for [a_chunk, b_chunk, g_chunk] in pieces.iter() {
+            // Query include/exclude trees once per chunk instead of per base; skip the whole
+            // chunk (including Lua and homopolymer queries) if no base can pass.
+            if self
+                .inc_filter
+                .prepare(ctx.include_tree, g_chunk.start, g_chunk.stop)
+                == ChunkFilter::SkipAll
+                || self
+                    .exc_filter
+                    .prepare(ctx.exclude_tree, g_chunk.start, g_chunk.stop)
+                    == ChunkFilter::SkipAll
+            {
+                continue;
+            }
+
+            let chunk_len = (a_chunk.stop - a_chunk.start) as usize;
+            let use_mask = if let Some(lf) =
+                self.lua_filter.as_ref().filter(|lf| lf.has_base_filter())
+            {
+                let (a_seq_slice, b_seq_slice) = if lf.needs_base_char() {
+                    self.a_seq_scratch.clear();
+                    self.b_seq_scratch.clear();
+                    for ai in a_chunk.start..a_chunk.stop {
+                        self.a_seq_scratch
+                            .push(unsafe { a_seq.decoded_base_unchecked(ai as usize) });
+                    }
+                    for bi in b_chunk.start..b_chunk.stop {
+                        self.b_seq_scratch
+                            .push(unsafe { b_seq.decoded_base_unchecked(bi as usize) });
+                    }
+                    (
+                        Some(self.a_seq_scratch.as_slice()),
+                        Some(self.b_seq_scratch.as_slice()),
+                    )
+                } else {
+                    (None, None)
+                };
+
+                match lf.eval_chunk(
+                    ChunkEval {
+                        a,
+                        b,
+                        a_q0: a_chunk.start,
+                        b_q0: b_chunk.start,
+                        g0: g_chunk.start,
+                        len: chunk_len,
+                        min_bq: min_base_qual,
+                        a_quals: &a_qual[a_chunk.start as usize..a_chunk.stop as usize],
+                        b_quals: &b_qual[b_chunk.start as usize..b_chunk.stop as usize],
+                        a_seq: a_seq_slice,
+                        b_seq: b_seq_slice,
+                    },
+                    &mut self.base_skip_mask,
+                ) {
+                    Ok(ChunkSkip::All) => continue,
+                    Ok(ChunkSkip::None) => false,
+                    Ok(ChunkSkip::Mask) => true,
+                    Err(e) => {
+                        if !self.logged_base_err {
+                            log::error!(
+                                "error evaluating base lua expression (further errors suppressed): {e}"
+                            );
+                            self.logged_base_err = true;
+                        }
+                        false
+                    }
+                }
+            } else {
+                false
+            };
+
             // we want to limit to the bounds of the read. since homopolymers outside of the read won't affect it.
             let eps = 1;
             let g_start = (g_chunk.start.max(MAX_HP_DIST as u32) - MAX_HP_DIST as u32)
-                .max(a.pos() as u32 + eps)
-                .max(b.pos() as u32 + eps);
+                .max(ma.start + eps)
+                .max(mb.start + eps);
             let g_stop = (g_chunk.stop + MAX_HP_DIST as u32)
-                .min(a.cigar().end_pos() as u32 - eps)
-                .min(b.cigar().end_pos() as u32 - eps);
+                .min(ma.end - eps)
+                .min(mb.end - eps);
             let hps: Option<Vec<_>> = if g_start <= g_stop {
-                hp_tree.as_ref().map(|t| t.find(g_start, g_stop).collect())
+                ctx.hp_tree.as_ref().map(|t| t.find(g_start, g_stop).collect())
             } else {
                 None
             };
+
+            // Monotonic cursor into `hps`: since `genome_pos` strictly increases across the chunk
+            // and `hps` is sorted by start, we never rescan homopolymers > MAX_HP_DIST behind us.
+            let mut hp_cursor: usize = 0;
 
             for (ai, bi) in std::iter::zip(a_chunk.start..a_chunk.stop, b_chunk.start..b_chunk.stop)
             {
@@ -480,123 +734,111 @@ impl Counts {
                 if bq < min_base_qual {
                     continue;
                 }
-                genome_pos = g_chunk.start + (ai - a_chunk.start);
-
-                if let Some(t) = include_tree {
-                    if t.count(genome_pos, genome_pos + 1) == 0 {
-                        continue;
-                    }
+                let offset = ai - a_chunk.start;
+                if use_mask && self.base_skip_mask[offset as usize] != 0 {
+                    continue;
                 }
-                if let Some(t) = exclude_tree {
-                    if t.count(genome_pos, genome_pos + 1) != 0 {
-                        continue;
-                    }
+                genome_pos = g_chunk.start + offset;
+
+                if !self.inc_filter.passes(genome_pos) || !self.exc_filter.passes(genome_pos) {
+                    continue;
+                }
+
+                // Read raw 4-bit BAM base nibbles first so matching bases (>99%) avoid ASCII
+                // decoding (`ENC_TO_CTX2` is a 16-byte LUT). Skip N / ambiguous IUPAC bases
+                // (ctx2 == 2) before updating depth, counts, or mismatches (`context_lookup`
+                // only handles A/C/G/T pairs and `cnts` has only 2 context slots).
+                let a_enc = unsafe { a_seq.encoded_base_unchecked(ai as usize) };
+                let b_enc = unsafe { b_seq.encoded_base_unchecked(bi as usize) };
+                let mut a_ctx2 = ENC_TO_CTX2[a_enc as usize];
+                let mut b_ctx2 = ENC_TO_CTX2[b_enc as usize];
+                if (a_ctx2 | b_ctx2) >= 2 {
+                    continue;
                 }
 
                 let aq = Counts::qual_to_bin(aq);
                 let bq = Counts::qual_to_bin(bq);
 
-                if self.depth_writer.is_some() {
-                    self.depth
-                        .entry(genome_pos)
-                        .or_default()
-                        .entry((aq, bq))
-                        .and_modify(|v| *v += 1)
-                        .or_insert(1);
+                if let Some(ref mut depth) = self.depth {
+                    depth.add(genome_pos, aq, bq);
                 }
 
-                let a_base = unsafe { a_seq.decoded_base_unchecked(ai as usize) };
-                let b_base = unsafe { b_seq.decoded_base_unchecked(bi as usize) };
+                let (a_hp_dist, b_hp_dist) = if let Some(ref hps_vec) = hps {
+                    while hp_cursor < hps_vec.len()
+                        && hps_vec[hp_cursor].stop + (MAX_HP_DIST as u32) < genome_pos
+                    {
+                        hp_cursor += 1;
+                    }
+                    let slice = &hps_vec[hp_cursor..];
+                    let ah = hp::hp_distance(Some(slice), genome_pos, ma.start, ma.end, ma.strand)
+                        .map(|d| (d + MAX_HP_DIST) as usize)
+                        .unwrap_or(NO_HP_BIN);
+                    let bh = hp::hp_distance(Some(slice), genome_pos, mb.start, mb.end, mb.strand)
+                        .map(|d| (d + MAX_HP_DIST) as usize)
+                        .unwrap_or(NO_HP_BIN);
+                    (ah, bh)
+                } else {
+                    (NO_HP_BIN, NO_HP_BIN)
+                };
 
-                let a_bin = (ai / bin_size) as usize;
-                let b_bin = (bi / bin_size) as usize;
+                let a_bin_off = bin_off_table[ai as usize];
+                let b_bin_off = bin_off_table[bi as usize];
 
-                let a_hp_dist = hp::hp_distance(
-                    hps.as_deref(),
-                    genome_pos,
-                    a.pos() as u32,
-                    a.cigar().end_pos() as u32,
-                    if a.is_reverse() { -1 } else { 1 },
-                )
-                .map(|d| (d + MAX_HP_DIST) as usize)
-                .unwrap_or((2 * MAX_HP_DIST + 1) as usize);
-
-                let b_hp_dist = hp::hp_distance(
-                    hps.as_deref(),
-                    genome_pos,
-                    b.pos() as u32,
-                    b.cigar().end_pos() as u32,
-                    if b.is_reverse() { -1 } else { 1 },
-                )
-                .map(|d| (d + MAX_HP_DIST) as usize)
-                .unwrap_or((2 * MAX_HP_DIST + 1) as usize);
-
-                /* read1/2, F/R, pos, mq, bq, ctx, hp_dist */
-                let mut a_index = [
-                    1 - a.is_first_in_template() as usize, // 0 r1
-                    (a.is_reverse() as usize),             //
-                    a_bin,
-                    aq as usize,
-                    // NOTE that this could be an error so we might change this later if we learn a_base is an error
-                    Counts::base_to_ctx2(a_base),
-                    a_hp_dist,
-                ];
-
-                let mut b_index = [
-                    1 - b.is_first_in_template() as usize,
-                    (b.is_reverse() as usize),
-                    b_bin,
-                    bq as usize,
-                    // NOTE that this could be an error so we might change this later if we learn b_base is an error
-                    Counts::base_to_ctx2(b_base),
-                    b_hp_dist,
-                ];
-
-                if a_base == b_base {
-                    // fast path to increment separately here because we must do some extra stuff to error base before incrementing count
-                    // if there is an error.
-                    self.counts.cnts[a_index] += 1;
-                    self.counts.cnts[b_index] += 1;
+                if a_enc == b_enc {
+                    cnts_slice[cnts_flat_idx(ma.row_base, a_bin_off, aq, a_ctx2, a_hp_dist)] += 1;
+                    cnts_slice[cnts_flat_idx(mb.row_base, b_bin_off, bq, a_ctx2, b_hp_dist)] += 1;
                     self.counts.matches += 1;
                     continue;
                 }
 
-                self.counts.mismatches += 1;
-                let mut err = ['X', 'X'];
+                let a_base = ENC_TO_BASE[a_enc as usize];
+                let b_base = ENC_TO_BASE[b_enc as usize];
 
-                let real_base = if self.ibam.is_some() {
-                    let mut base_counts = pile(
-                        self.ibam.as_mut().unwrap(),
-                        a.tid(),
-                        genome_pos,
-                        min_map_qual,
-                        min_base_qual,
-                    );
+                let a_index = [
+                    ma.read12,
+                    ma.rev_idx,
+                    (ai / bin_size) as usize,
+                    aq as usize,
+                    a_ctx2,
+                    a_hp_dist,
+                ];
+                let b_index = [
+                    mb.read12,
+                    mb.rev_idx,
+                    (bi / bin_size) as usize,
+                    bq as usize,
+                    b_ctx2,
+                    b_hp_dist,
+                ];
+
+                self.counts.mismatches += 1;
+
+                let real_base = if let Some(ref mut pileup) = self.pileup {
+                    let mut base_counts =
+                        pileup.query(a.tid(), genome_pos, min_map_qual, min_base_qual);
                     let am = argmax(&base_counts).expect("error selecting maximum index");
                     // check that the 2nd most common base is very low frequency, otherwise might be a het.
                     base_counts.sort();
                     let cmax = base_counts[4];
-                    // if 3nd most common base is more than 50% of first, then we don't know which is right.
+                    // if 2nd most common base is more than 50% of first, then we don't know which is right.
                     if base_counts[3] as f64 / cmax as f64 > 0.5 {
                         log::debug!(
                             "skipping due to unknown truth given base_counts {:?} at pos:{}:{}",
                             base_counts,
-                            chrom.as_ref(),
+                            ctx.chrom,
                             genome_pos
                         );
                         continue;
                     }
                     ['A', 'C', 'G', 'T', 'N'][am]
                 } else {
-                    fasta
-                        .as_ref()
-                        .unwrap()
-                        .fetch_seq(&chrom, genome_pos as usize, genome_pos as usize)
-                        .expect("error extracting base")[0] as char
+                    ctx.chrom_seq
+                        .as_deref()
+                        .expect("chrom_seq must be loaded when pileup is disabled")
+                        [genome_pos as usize] as char
                 };
                 if real_base == 'N' {
-                    let chrom_string = chrom.as_ref();
-                    log::warn!("got 'N' for {chrom_string}:{genome_pos}. skipping");
+                    log::warn!("got 'N' for {}:{genome_pos}. skipping", ctx.chrom);
                     let pos = Position {
                         tid: a.tid() as u16,
                         pos: genome_pos,
@@ -609,20 +851,16 @@ impl Counts {
                 }
 
                 let err_index = if a_base == real_base as u8 {
-                    // b is the error
+                    // b is the error; correct b's context to the true base before incrementing cnts.
                     let mut index = b_index;
-                    b_index[4] = a_index[4]; // we correct this because we want to track the true base
-                    index[4] = CONTEXT_LOOKUP[&(a_base, b_base)];
-                    err[0] = a_base as char;
-                    err[1] = b_base as char;
+                    b_ctx2 = a_ctx2;
+                    index[4] = context_lookup(a_base, b_base);
                     index
                 } else if b_base == real_base as u8 {
-                    // a is the error
+                    // a is the error; correct a's context to the true base before incrementing cnts.
                     let mut index = a_index;
-                    a_index[4] = b_index[4]; // we correct this because we want to track the true base
-                    index[4] = CONTEXT_LOOKUP[&(b_base, a_base)];
-                    err[0] = b_base as char;
-                    err[1] = a_base as char;
+                    a_ctx2 = b_ctx2;
+                    index[4] = context_lookup(b_base, a_base);
                     index
                 } else {
                     // can't determine which is error base.
@@ -634,7 +872,7 @@ impl Counts {
                     };
                     log::debug!(
                         "bases mismatches between reads and neither matches reference at pos:{}:{}. adding N",
-                        chrom.as_ref(),
+                        ctx.chrom,
                         genome_pos
                     );
                     let context_counts = self.counts.error_positions.entry(pos).or_insert([0; 7]);
@@ -651,97 +889,24 @@ impl Counts {
                 let context_counts = self.counts.error_positions.entry(pos).or_insert([0; 7]);
                 context_counts[context_idx] += 1;
 
-                self.counts.cnts[a_index] += 1;
-                self.counts.cnts[b_index] += 1;
+                cnts_slice[cnts_flat_idx(ma.row_base, a_bin_off, aq, a_ctx2, a_hp_dist)] += 1;
+                cnts_slice[cnts_flat_idx(mb.row_base, b_bin_off, bq, b_ctx2, b_hp_dist)] += 1;
 
                 self.counts.errs[err_index] += 1;
-                if log::log_enabled!(log::Level::Debug)
-                    && unsafe { str::from_utf8_unchecked(a.qname()) }
-                        == "A00744:46:HV3C3DSXX:2:2611:30798:35258"
-                {
-                    log::debug!(
-                        "gpos:{}, err:{}->{}, err-index:{:?}, ai:{}, bi:{}, {:?}",
-                        genome_pos,
-                        /* base_counts, */
-                        err[0],
-                        err[1],
-                        err_index,
-                        ai,
-                        bi,
-                        unsafe { str::from_utf8_unchecked(a.qname()) },
-                    );
-                }
             }
         }
-        if self.depth_writer.is_some() {
-            self.handle_depth(chrom.as_ref(), genome_pos as i64);
+        self.pieces_scratch = pieces;
+        if genome_pos != u32::MAX {
+            if let Some(ref mut depth) = self.depth {
+                // Flush positions strictly before max(a_start, b_start): in coordinate-sorted BAMs,
+                // no subsequent overlapping pair can cover positions earlier than the second mate's start.
+                depth.flush_before(ctx.chrom, ma.start.max(mb.start) as i64);
+            }
         }
     }
 }
 
-fn pile(
-    ibam: &mut IndexedReader,
-    tid: i32,
-    genome_pos: u32,
-    min_map_qual: u8,
-    min_base_qual: u8,
-) -> [u32; 5] {
-    let mut base_counts: [u32; 5] = [0; 5];
-
-    ibam.fetch((tid, genome_pos, genome_pos + 1))
-        .expect("Error seeking to genomic position");
-
-    let mut p = ibam.pileup();
-    p.set_max_depth(100_000);
-    p.filter(|col| col.as_ref().unwrap().pos() == genome_pos)
-        .for_each(|col| {
-            let col = col.unwrap();
-
-            col.alignments().for_each(|aln| {
-                if let Some(qpos) = aln.qpos() {
-                    let record = aln.record();
-                    // here we want a accurate count, so we skip stuff at either
-                    // end of a read (within 3 bases of end)
-                    // along with low base-quality and low mapping-quality
-                    if qpos < 3 || qpos > record.qual().len() - 4 {
-                        return;
-                    }
-                    if record.mapq() < min_map_qual {
-                        return;
-                    }
-                    if record.qual()[qpos] < min_base_qual {
-                        return;
-                    }
-                    let base_idx = match record.seq()[qpos] as char {
-                        'A' => 0,
-                        'C' => 1,
-                        'G' => 2,
-                        'T' => 3,
-                        _ => 4,
-                    };
-                    base_counts[base_idx] += 1;
-                }
-            });
-        });
-    base_counts
-}
-
 lazy_static! {
-    pub(crate) static ref CONTEXT_LOOKUP: HashMap<(u8, u8), usize> = HashMap::from([
-        ((b'T', b'G'), 0usize),
-        ((b'A', b'C'), 0usize),
-        ((b'T', b'C'), 1usize),
-        ((b'A', b'G'), 1usize),
-        ((b'T', b'A'), 2usize),
-        ((b'A', b'T'), 2usize),
-        ((b'C', b'A'), 3usize),
-        ((b'G', b'T'), 3usize),
-        ((b'C', b'G'), 4usize),
-        ((b'G', b'C'), 4usize),
-        ((b'C', b'T'), 5usize),
-        ((b'G', b'A'), 5usize),
-        ((b'N', b'N'), 6usize),
-    ]);
     pub(crate) static ref CONTEXT_TO_CONTEXT2: [[char; 2]; 7] = [
         ['A', 'C'],
         ['A', 'G'],
@@ -761,7 +926,7 @@ lazy_static! {
     ]);
 }
 
-pub(crate) fn filter_read(r: &Rc<Record>) -> bool {
+pub(crate) fn filter_read(r: &Record) -> bool {
     r.tid() == r.mtid()
         && r.tid() >= 0
         && !r.is_unmapped()
@@ -812,13 +977,19 @@ fn reference(a: Cigar) -> i64 {
     }
 }
 
-fn indel_coords(
+struct IndelError {
+    coord: Coordinates,
+    qpos: usize,
+    from_a: bool,
+}
+
+fn indel_coords_with_qpos(
     cig: &CigarStringView,
     genomic_min: u32,
     genomic_max: u32,
     base_quals: &[u8],
-) -> Vec<Coordinates> {
-    let mut result: Vec<Coordinates> = Vec::new();
+) -> Vec<(Coordinates, usize)> {
+    let mut result: Vec<(Coordinates, usize)> = Vec::new();
     let mut start: u32 = cig.pos() as u32;
     let mut read_i = 0;
 
@@ -834,20 +1005,26 @@ fn indel_coords(
         // TODO: handle partial overlap of start with the current cigar op.
         match c {
             Cigar::Ins(l) => {
-                result.push(Coordinates {
-                    start,
-                    stop: start + 1,
-                    indel_type: IndelType::Insertion(*l as u32),
-                    qual: base_quals[read_i],
-                });
+                result.push((
+                    Coordinates {
+                        start,
+                        stop: start + 1,
+                        indel_type: IndelType::Insertion(*l ),
+                        qual: base_quals[read_i],
+                    },
+                    read_i,
+                ));
             }
             Cigar::Del(d) => {
-                result.push(Coordinates {
-                    start,
-                    stop: start + *d,
-                    indel_type: IndelType::Deletion(*d as u32),
-                    qual: base_quals[read_i],
-                });
+                result.push((
+                    Coordinates {
+                        start,
+                        stop: start + *d,
+                        indel_type: IndelType::Deletion(*d ),
+                        qual: base_quals[read_i],
+                    },
+                    read_i,
+                ));
             }
             _ => {}
         }
@@ -857,43 +1034,74 @@ fn indel_coords(
     result
 }
 
-fn find_non_exact(
-    a_indel_coords: &[Coordinates],
-    b_indel_coords: &[Coordinates],
-    result: &mut Vec<Coordinates>,
+fn find_non_exact_with_qpos(
+    a_indel_coords: &[(Coordinates, usize)],
+    b_indel_coords: &[(Coordinates, usize)],
+    result: &mut Vec<IndelError>,
     min_base_qual: u8,
+    from_a: bool,
 ) {
-    for a in a_indel_coords {
+    for (a, qpos) in a_indel_coords {
         if a.qual <= min_base_qual {
             continue;
         }
-        match b_indel_coords.binary_search_by(|b| b.cmp(a)) {
+        match b_indel_coords.binary_search_by(|(b, _)| b.cmp(a)) {
             Ok(_) => {}
             Err(bi) => {
                 // we check base-qual (first base) of b as well.
                 // this is a bit weird, but ensures that at least both
                 // reads were confident at this site.
-                if bi < b_indel_coords.len() && b_indel_coords[bi].qual < min_base_qual {
+                if bi < b_indel_coords.len() && b_indel_coords[bi].0.qual < min_base_qual {
                     continue;
                 }
                 let bq = if bi < b_indel_coords.len() {
-                    b_indel_coords[bi].qual
+                    b_indel_coords[bi].0.qual
                 } else {
                     u8::MAX
                 };
                 // any non-exact matches are errors
-                result.push(Coordinates {
-                    start: a.start,
-                    stop: a.stop,
-                    indel_type: a.indel_type.clone(),
-                    qual: a.qual.min(bq),
+                result.push(IndelError {
+                    coord: Coordinates {
+                        start: a.start,
+                        stop: a.stop,
+                        indel_type: a.indel_type.clone(),
+                        qual: a.qual.min(bq),
+                    },
+                    qpos: *qpos,
+                    from_a,
                 });
             }
         }
     }
 }
 
+/// Report genomic coordinates (and query positions) of indels that do not match between the reads.
+fn indel_error_pieces_with_qpos(
+    a: &CigarStringView,
+    b: &CigarStringView,
+    a_qual: &[u8],
+    b_qual: &[u8],
+    min_base_qual: u8,
+) -> Vec<IndelError> {
+    let aend = a.end_pos() as u32;
+    let bend = b.end_pos() as u32;
+    if aend <= b.pos() as u32 || bend <= a.pos() as u32 {
+        return vec![];
+    }
+    let a_indel_coords = indel_coords_with_qpos(a, b.pos() as u32, bend, a_qual);
+    let b_indel_coords = indel_coords_with_qpos(b, a.pos() as u32, aend, b_qual);
+    if a_indel_coords.is_empty() && b_indel_coords.is_empty() {
+        return vec![];
+    }
+
+    let mut result: Vec<IndelError> = Vec::new();
+    find_non_exact_with_qpos(&a_indel_coords, &b_indel_coords, &mut result, min_base_qual, true);
+    find_non_exact_with_qpos(&b_indel_coords, &a_indel_coords, &mut result, min_base_qual, false);
+    result
+}
+
 /// Report genomic coordiantes of bases that do not match between the reads.
+#[cfg(test)]
 fn indel_error_pieces(
     a: &CigarStringView,
     b: &CigarStringView,
@@ -901,43 +1109,71 @@ fn indel_error_pieces(
     b_qual: &[u8],
     min_base_qual: u8,
 ) -> Vec<Coordinates> {
-    let aend = a.end_pos() as u32;
-    let bend = b.end_pos() as u32;
-    //let astart = a.pos() + a.leading_softclips();
-    //let bstart = b.pos() + b.leading_softclips();
-    if aend <= b.pos() as u32 || bend <= a.pos() as u32 {
-        return vec![];
-    }
-    let a_indel_coords = indel_coords(a, b.pos() as u32, bend, a_qual);
-    let b_indel_coords = indel_coords(b, a.pos() as u32, aend, b_qual);
-    if a_indel_coords.is_empty() && b_indel_coords.is_empty() {
-        return vec![];
-    }
-
-    let mut result: Vec<Coordinates> = Vec::new();
-    find_non_exact(&a_indel_coords, &b_indel_coords, &mut result, min_base_qual);
-    find_non_exact(&b_indel_coords, &a_indel_coords, &mut result, min_base_qual);
-    result
+    indel_error_pieces_with_qpos(a, b, a_qual, b_qual, min_base_qual)
+        .into_iter()
+        .map(|ie| ie.coord)
+        .collect()
 }
 
-/// Return mapped parts of each read that overlap the other.
-/// Returns A, B, genome coordiantes.
-fn overlap_pieces(
+/// Return mapped parts of each read that overlap the other into `result` (reusing its capacity).
+/// Each entry holds `[a_read_coords, b_read_coords, genome_coords]`.
+fn overlap_pieces_into(
     a: &CigarStringView,
     b: &CigarStringView,
     a_qual: &[u8],
     b_qual: &[u8],
     skip_insertions: bool,
-) -> Vec<[Coordinates; 3]> {
-    let aend = a.end_pos();
-    let bend = b.end_pos();
-    //let astart = a.pos() + a.leading_softclips();
-    //let bstart = b.pos() + b.leading_softclips();
-    if aend <= b.pos() || bend <= a.pos() {
-        return vec![];
+    result: &mut Vec<[Coordinates; 3]>,
+) {
+    result.clear();
+    // Fast path for the common case (~95%+ of short-read pairs): both reads are a single
+    // ungapped alignment op (M/=/X), so the overlap is one contiguous interval with no loop.
+    if a.len() == 1
+        && b.len() == 1
+        && matches!(a[0], Cigar::Match(_) | Cigar::Equal(_) | Cigar::Diff(_))
+        && matches!(b[0], Cigar::Match(_) | Cigar::Equal(_) | Cigar::Diff(_))
+    {
+        let a_start = a.pos();
+        let b_start = b.pos();
+        let a_end = a_start + a[0].len() as i64;
+        let b_end = b_start + b[0].len() as i64;
+        let g_start = a_start.max(b_start);
+        let g_stop = a_end.min(b_end);
+        if g_stop <= g_start {
+            return;
+        }
+        let glen = (g_stop - g_start) as u32;
+        let a_over = (g_start - a_start) as u32;
+        let b_over = (g_start - b_start) as u32;
+        result.push([
+            Coordinates {
+                start: a_over,
+                stop: a_over + glen,
+                indel_type: IndelType::NotIndel,
+                qual: a_qual[a_over as usize],
+            },
+            Coordinates {
+                start: b_over,
+                stop: b_over + glen,
+                indel_type: IndelType::NotIndel,
+                qual: b_qual[b_over as usize],
+            },
+            Coordinates {
+                start: g_start as u32,
+                stop: g_stop as u32,
+                indel_type: IndelType::NotIndel,
+                qual: a_qual[a_over as usize],
+            },
+        ]);
+        return;
     }
 
-    let mut result: Vec<[Coordinates; 3]> = Vec::new();
+    let aend = a.end_pos();
+    let bend = b.end_pos();
+    if aend <= b.pos() || bend <= a.pos() {
+        return;
+    }
+
     let mut ai: usize = 0;
     let mut bi: usize = 0;
     let mut a_genome_pos = a.pos();
@@ -991,8 +1227,8 @@ fn overlap_pieces(
                             start: (a_read_pos + a_over) as u32,
                             stop: (a_read_pos + a_over + glen) as u32,
                             indel_type: match aop {
-                                Cigar::Ins(l) => IndelType::Insertion(l as u32),
-                                Cigar::Del(l) => IndelType::Deletion(l as u32),
+                                Cigar::Ins(l) => IndelType::Insertion(l),
+                                Cigar::Del(l) => IndelType::Deletion(l),
                                 _ => IndelType::NotIndel,
                             },
                             qual: a_qual[a_read_pos as usize + a_over as usize],
@@ -1001,8 +1237,8 @@ fn overlap_pieces(
                             start: (b_read_pos + b_over) as u32,
                             stop: (b_read_pos + b_over + glen) as u32,
                             indel_type: match bop {
-                                Cigar::Ins(l) => IndelType::Insertion(l as u32),
-                                Cigar::Del(l) => IndelType::Deletion(l as u32),
+                                Cigar::Ins(l) => IndelType::Insertion(l),
+                                Cigar::Del(l) => IndelType::Deletion(l),
                                 _ => IndelType::NotIndel,
                             },
                             qual: b_qual[b_read_pos as usize + b_over as usize],
@@ -1011,8 +1247,8 @@ fn overlap_pieces(
                             start: genome_start as u32,
                             stop: genome_stop as u32,
                             indel_type: match aop {
-                                Cigar::Ins(l) => IndelType::Insertion(l as u32),
-                                Cigar::Del(l) => IndelType::Deletion(l as u32),
+                                Cigar::Ins(l) => IndelType::Insertion(l),
+                                Cigar::Del(l) => IndelType::Deletion(l),
                                 _ => IndelType::NotIndel,
                             },
                             qual: a_qual[a_read_pos as usize + a_over as usize],
@@ -1033,7 +1269,18 @@ fn overlap_pieces(
             }
         }
     }
+}
 
+#[cfg(test)]
+fn overlap_pieces(
+    a: &CigarStringView,
+    b: &CigarStringView,
+    a_qual: &[u8],
+    b_qual: &[u8],
+    skip_insertions: bool,
+) -> Vec<[Coordinates; 3]> {
+    let mut result = Vec::new();
+    overlap_pieces_into(a, b, a_qual, b_qual, skip_insertions, &mut result);
     result
 }
 
@@ -1319,5 +1566,142 @@ mod tests {
             indel_error_pieces(&cigar_a, &cigar_b, &a_bqs, &b_bqs, 60),
             expected
         );
+    }
+
+    #[test]
+    fn test_n_bases_skipped() {
+        // Test both matching N/N (including qual 65 -> bin 4) and mismatching N/A against truth A:
+        // neither should panic, inflate counts/mismatches, or emit denominator depth.
+        let mut a = Record::new();
+        a.set(
+            b"pair1",
+            Some(&CigarString(vec![Cigar::Match(5)])),
+            b"ANNNA",
+            &[35, 35, 65, 35, 35],
+        );
+        a.set_tid(0);
+        a.set_pos(100);
+        a.set_flags(0x1 | 0x40); // paired, read1
+
+        let mut b = Record::new();
+        b.set(
+            b"pair1",
+            Some(&CigarString(vec![Cigar::Match(5)])),
+            b"ANNAA",
+            &[35, 35, 65, 35, 35],
+        );
+        b.set_tid(0);
+        b.set_pos(100);
+        b.set_flags(0x1 | 0x80 | 0x10); // paired, read2, reverse
+
+        let mut ref_seq = vec![b'A'; 120];
+        ref_seq[100..105].copy_from_slice(b"AAAAA");
+
+        let tmp = std::env::temp_dir().join(format!(
+            "fraguracy-n-depth-test-{}.bed.gz",
+            std::process::id()
+        ));
+        let tmp_str = tmp.to_string_lossy().into_owned();
+
+        let mut counts = Counts::new(None, 10, 10, 20, 20, None);
+        counts.set_depth_writer(&tmp_str).unwrap();
+        let a_cigar = a.cigar();
+        let ctx = ChromCtx {
+            chrom: "chr1",
+            chrom_seq: Some(ref_seq),
+            include_tree: None,
+            exclude_tree: None,
+            hp_tree: None,
+        };
+        counts.increment(&a, &b, &a_cigar, &ctx);
+        counts.handle_depth("chr1", i64::MAX);
+        // Drop `counts` so the BGZF writer flushes and closes cleanly before reading back.
+        let matches = counts.counts.matches;
+        let mismatches = counts.counts.mismatches;
+        let cnts_sum = counts.counts.cnts.sum();
+        let err_pos_len = counts.counts.error_positions.len();
+        drop(counts);
+
+        // Only positions 100 (A/A) and 104 (A/A) should be counted; 101-102 (N/N) and 103 (N/A) skipped.
+        assert_eq!(matches, 2);
+        assert_eq!(mismatches, 0);
+        assert_eq!(cnts_sum, 4);
+        assert_eq!(err_pos_len, 0);
+
+        use std::io::Read;
+        let mut gz = flate2::read::MultiGzDecoder::new(std::fs::File::open(&tmp).unwrap());
+        let mut depth_bed = String::new();
+        gz.read_to_string(&mut depth_bed).unwrap();
+        let _ = std::fs::remove_file(&tmp);
+        let rows: Vec<&str> = depth_bed.lines().collect();
+        assert_eq!(
+            rows,
+            vec![
+                "#chrom\tstart\tend\tread1_bq_bin\tread2_bq_bin\tpair-ovl-depth",
+                "chr1\t100\t101\t20-36\t20-36\t1",
+                "chr1\t104\t105\t20-36\t20-36\t1",
+            ]
+        );
+    }
+
+    #[test]
+    fn test_chunk_include_exclude_filters() {
+        use rust_lapper::Interval;
+        let iv = |start, stop| Interval {
+            start,
+            stop,
+            val: 0u8,
+        };
+
+        // Unmerged overlapping & bookended intervals in include_tree, plus partial exclude_tree.
+        let inc = Lapper::new(vec![iv(100, 104), iv(103, 106), iv(108, 110)]);
+        let exc = Lapper::new(vec![iv(101, 103), iv(102, 104)]);
+        // Positions in [100, 110):
+        //   included: 100, 101, 102, 103, 104, 105, 108, 109 (8 bases)
+        //   excluded: 101, 102, 103
+        //   kept:     100, 104, 105, 108, 109 (5 bases)
+        let mut a = Record::new();
+        a.set(
+            b"pair1",
+            Some(&CigarString(vec![Cigar::Match(10)])),
+            b"ACGTACGTAC",
+            &[35; 10],
+        );
+        a.set_tid(0);
+        a.set_pos(100);
+        a.set_flags(0x1 | 0x40);
+
+        let mut b = Record::new();
+        b.set(
+            b"pair1",
+            Some(&CigarString(vec![Cigar::Match(10)])),
+            b"ACGTACGTAC",
+            &[35; 10],
+        );
+        b.set_tid(0);
+        b.set_pos(100);
+        b.set_flags(0x1 | 0x80 | 0x10);
+
+        let mut counts = Counts::new(None, 10, 10, 20, 20, None);
+        let a_cigar = a.cigar();
+        let ctx = ChromCtx {
+            chrom: "chr1",
+            chrom_seq: None,
+            include_tree: Some(&inc),
+            exclude_tree: Some(&exc),
+            hp_tree: None,
+        };
+        counts.increment(&a, &b, &a_cigar, &ctx);
+        assert_eq!(counts.counts.matches, 5);
+        assert_eq!(counts.counts.cnts.sum(), 10);
+
+        // Full-coverage include (via bookended merge) & full-coverage exclude fast paths.
+        let mut inc_f = RegionFilter::new(true);
+        let mut exc_f = RegionFilter::new(false);
+        let full_inc = Lapper::new(vec![iv(100, 105), iv(105, 110)]);
+        assert_eq!(inc_f.prepare(Some(&full_inc), 100, 110), ChunkFilter::PassAll);
+        assert_eq!(inc_f.prepare(Some(&full_inc), 200, 210), ChunkFilter::SkipAll);
+        assert_eq!(exc_f.prepare(Some(&full_inc), 100, 110), ChunkFilter::SkipAll);
+        assert_eq!(exc_f.prepare(Some(&full_inc), 200, 210), ChunkFilter::PassAll);
     }
 }

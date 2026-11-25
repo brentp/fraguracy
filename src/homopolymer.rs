@@ -4,15 +4,41 @@ use rust_lapper::{Interval, Lapper};
 
 /// Find the homopolymers and return an interval tree with the positions of the homopolymers.
 pub(crate) fn find_homopolymers(seq: &[u8], re: &Regex) -> Lapper<u32, u8> {
-    let seq_str = unsafe { std::str::from_utf8_unchecked(seq) };
-    let matches = re.find_iter(seq_str);
-    let intervals: Vec<Interval<u32, u8>> = matches
-        .map(|m| Interval {
-            start: m.range().start as u32,
-            stop: m.range().end as u32,
-            val: 0,
-        })
-        .collect();
+    let intervals: Vec<Interval<u32, u8>> = if re.as_str() == HP_REGEX {
+        // Fast byte scan for default A{3,}|C{3,}|G{3,}|T{3,}
+        let mut ivs = Vec::new();
+        let n = seq.len();
+        let mut i = 0;
+        while i < n {
+            let b = seq[i];
+            if matches!(b, b'A' | b'C' | b'G' | b'T') {
+                let start = i;
+                i += 1;
+                while i < n && seq[i] == b {
+                    i += 1;
+                }
+                if i - start >= 3 {
+                    ivs.push(Interval {
+                        start: start as u32,
+                        stop: i as u32,
+                        val: 0,
+                    });
+                }
+            } else {
+                i += 1;
+            }
+        }
+        ivs
+    } else {
+        let seq_str = unsafe { std::str::from_utf8_unchecked(seq) };
+        re.find_iter(seq_str)
+            .map(|m| Interval {
+                start: m.range().start as u32,
+                stop: m.range().end as u32,
+                val: 0,
+            })
+            .collect()
+    };
     log::info!("found {} homopolymers with regex: {re}", intervals.len());
     Lapper::new(intervals)
 }
@@ -36,6 +62,13 @@ pub(crate) fn hp_distance(
 
     // strand will be 1 for forward, -1 for reverse
     for hp in hps.map(|hps| hps.iter()).unwrap_or_default() {
+        // hps are sorted by start; once hp.start is beyond pos + MAX_HP_DIST we can stop.
+        if hp.start > pos + crate::fraguracy::MAX_HP_DIST as u32 {
+            break;
+        }
+        if hp.stop + (crate::fraguracy::MAX_HP_DIST as u32) < pos {
+            continue;
+        }
         // first we check if the hp is within 3 bases of the read start or stop.
         // since this could truncate the hp and not affect the read.
         // cases to exclude:
@@ -49,14 +82,6 @@ pub(crate) fn hp_distance(
         if hp.start <= read_stop && hp.start > read_stop - 3 {
             continue;
         }
-
-        assert!(
-            pos >= read_start && pos <= read_stop,
-            "pos: {}, read_start: {}, read_stop: {}",
-            pos,
-            read_start,
-            read_stop
-        );
 
         let d = if pos < hp.start {
             hp.start as i64 - pos as i64
@@ -114,7 +139,7 @@ mod tests {
 
     #[test]
     fn test_hp_distance() {
-        let hp = vec![Interval {
+        let hp = [Interval {
             start: 9,
             stop: 12,
             val: 0,

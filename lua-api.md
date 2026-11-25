@@ -1,6 +1,11 @@
 # Lua API Reference
 
-This document describes the Lua API for filtering BAM records.
+This document describes the Lua API for filtering BAM records and overlapping bases in `fraguracy extract`.
+
+There are two Lua filter flags:
+
+- `-l` / `--lua-expression`: **Read-level** filter evaluated once per overlapping read pair (against read `a` and read `b`). Has access to `read`. Returning `true` skips the entire read pair.
+- `-L` / `--lua-base-expression`: **Per-base** filter evaluated only for overlapping pairs that pass `-l`. Has access to both `read` and `base`. For overlapping base positions, returning `true` for either mate skips that position. For indel errors, it is evaluated only on the mate carrying the indel (`base.is_indel == true`). Keeping read-level checks in `-l` and position-specific checks in `-L` lets you opt into per-base evaluation only when needed.
 
 ## Flags
 
@@ -23,7 +28,7 @@ The `flags` object represents BAM flags returned from `read.flags` and provides 
 - `supplementary`: Returns true if this is a supplementary alignment
 - `flag`: Returns the raw integer flag value
 
-## Read
+## Read (`-l` and `-L`)
 
 The `read` object provides access to BAM record data with the following fields and methods:
 
@@ -53,19 +58,32 @@ All of these are properties on the `read`, e.g. `read.mapping_quality`
 - `read:n_proportion_3_prime(n:number)`: Returns the proportion of N bases within `n` of the 3' end of the read
 - `read:n_proportion_5_prime(n:number)`: Returns the proportion of N bases within `n` of the 5' end of the read
 
-### Not Implemented
+## Base (`-L` / `--lua-base-expression` only)
 
-The following are not implemented as they require a per-base approach
-which is not used in fraguracy.
+The `base` object provides fast per-position access for each overlapping base (and indel error):
 
-- `bq` [NO]: Returns the base quality at the current position
-- `distance_from_5prime` [NO]: Returns the distance from the 5' end of the read
-- `distance_from_3prime` [NO]: Returns the distance from the 3' end of the read
-- `qpos()` [NO]: Returns the query position
+- `base.qpos`: 0-based query position in the read (for deletions, the query position of the base immediately following the deletion)
+- `base.gpos`: 0-based genomic reference position
+- `base.bq`: Phred base quality at `base.qpos` (for indels, the reported indel quality: the lower of the indel-carrying mate's quality at `base.qpos` and the next indel on the other mate if one exists)
+- `base.distance_from_5prime`: 0-based distance from the 5' end of the read (`0` at 5' end, `length - 1` at 3' end)
+- `base.distance_from_3prime`: 0-based distance from the 3' end of the read (`0` at 3' end, `length - 1` at 5' end)
+- `base.base`: Base call at `base.qpos` (`"A"`, `"C"`, `"G"`, `"T"`, `"N"`)
+- `base.is_indel`: `true` when evaluating an indel error (evaluated on the mate carrying the indel), `false` for base positions
+- `base.indel_length`: `0` for base positions, positive for insertions, negative for deletions
 
-## Usage Example
+> **Performance tip**: Put read-level predicates in `-l` and only position-dependent predicates in `-L`. When `-L` only accesses `base.*` (not `read.*` or `base.base`), fraguracy evaluates an entire overlap chunk inside Luau with zero per-base Rust callbacks.
 
-```lua
--- skip reads with mapping quality >= 20 and not supplementary and where the proportion of N's in the last 10 bases is > 0.1
-return read.mapping_quality >= 20 and not read.flags.supplementary and read:n_proportion_3_prime(10) > 0.1
+## Usage Examples
+
+```bash
+# Read-level only (-l): skip pairs where either read has MQ < 20 or >10% N in last 10 bases
+fraguracy extract -f ref.fa \
+  -l 'return read.mapping_quality < 20 or read:n_proportion_3_prime(10) > 0.1' \
+  sample.bam
+
+# Combine read-level (-l) and per-base (-L): skip reads with avg BQ < 20, and skip bases within 5 bp of 3' end or with BQ < 15
+fraguracy extract -f ref.fa \
+  -l 'return read.average_base_quality < 20' \
+  -L 'return base.distance_from_3prime < 5 or base.bq < 15' \
+  sample.bam
 ```

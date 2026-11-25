@@ -119,11 +119,10 @@ impl IntervalHeap {
                 let line = fh.read_line(&mut buf);
                 if line.is_ok() && !buf.starts_with('#') {
                     let r = parse_bed_line(&buf, file_i as u32, &(ih.chom_to_tid), is_indel);
-                    if r.is_err() && buf == "" {
+                    if r.is_err() && buf.is_empty() {
                         break;
                     } else {
                         ih.h.push(Reverse(r.unwrap_or_else(|_| {
-                            if buf != "" {}
                             panic!("Error parsing first line from file: '{buf}'")
                         })));
                         break;
@@ -170,7 +169,7 @@ fn parse_bed_line(
             let mut context = context.chars();
             let a = context.next().unwrap();
             let b = context.next().unwrap();
-            let idx = fraguracy::CONTEXT_LOOKUP[&(a as u8, b as u8)];
+            let idx = fraguracy::context_lookup(a as u8, b as u8);
             iv.count[idx] += count.parse::<u32>().unwrap();
         }
         iv
@@ -237,46 +236,15 @@ impl PartialEq for Interval {
 }
 
 impl PartialOrd for Interval {
-    #[allow(clippy::non_canonical_partial_ord_impl)]
     fn partial_cmp(&self, b: &Interval) -> Option<Ordering> {
-        if self.tid != b.tid {
-            return if self.tid < b.tid {
-                Some(Ordering::Less)
-            } else {
-                Some(Ordering::Greater)
-            };
-        }
-        if self.start != b.start {
-            return if self.start < b.start {
-                Some(Ordering::Less)
-            } else {
-                Some(Ordering::Greater)
-            };
-        }
-
-        if self.end != b.end {
-            return if self.end < b.end {
-                Some(Ordering::Less)
-            } else {
-                Some(Ordering::Greater)
-            };
-        }
-
-        if self.length != b.length {
-            return if self.length < b.length {
-                Some(Ordering::Less)
-            } else {
-                Some(Ordering::Greater)
-            };
-        }
-
-        Some(self.group.cmp(&b.group))
+        Some(self.cmp(b))
     }
 }
 
 impl Ord for Interval {
     fn cmp(&self, b: &Interval) -> std::cmp::Ordering {
-        self.partial_cmp(b).expect("cmp: not expecting None")
+        (self.tid, self.start, self.end, self.length, &self.group)
+            .cmp(&(b.tid, b.start, b.end, b.length, &b.group))
     }
 }
 

@@ -1,0 +1,104 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    if: ${{ !github.event.deleted }}
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+    env:
+      RUST_TARGET: ${{ matrix.target }}
+
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y build-essential clang cmake libclang-dev perl pkg-config
+          rustup toolchain install stable --profile minimal --target "$RUST_TARGET"
+
+      - name: Build static binary
+        env:
+          # RUSTFLAGS replaces the CPU-specific flags in .cargo/config.toml.
+          RUSTFLAGS: -C target-feature=+crt-static
+          CXX: clang++
+          CARGO_PROFILE_RELEASE_DEBUG: '0'
+          CARGO_PROFILE_RELEASE_STRIP: symbols
+        run: cargo +stable build --locked --release --target "$RUST_TARGET"
+
+      - name: Verify and package binary
+        run: |
+          binary="target/$RUST_TARGET/release/fraguracy"
+          elf_headers=$(readelf --wide --program-headers --dynamic "$binary")
+          if grep -Eq '^[[:space:]]*INTERP[[:space:]]|\(NEEDED\)' <<< "$elf_headers"; then
+            echo "::error::$binary has dynamic library dependencies"
+            exit 1
+          fi
+          "$binary" --version
+
+          mkdir -p dist package
+          install -m 755 "$binary" package/fraguracy
+          install -m 644 LICENSE package/LICENSE
+          tar -czf "dist/fraguracy-$RUST_TARGET.tar.gz" -C package fraguracy LICENSE
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: fraguracy-${{ matrix.target }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+          compression-level: 0
+
+  publish:
+    name: Publish GitHub release
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3  # v8.0.0
+        with:
+          pattern: fraguracy-*
+          path: dist
+          merge-multiple: true
+
+      - name: Upload release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          shopt -s failglob
+          assets=(dist/*.tar.gz)
+          if ! is_draft=$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq .isDraft); then
+            gh release create "$GITHUB_REF_NAME" --draft --verify-tag --generate-notes --title "$GITHUB_REF_NAME"
+            is_draft=true
+          fi
+          gh release upload "$GITHUB_REF_NAME" --clobber "${assets[@]}"
+          if [[ "$is_draft" == true ]]; then
+            gh release edit "$GITHUB_REF_NAME" --draft=false --verify-tag
+          fi

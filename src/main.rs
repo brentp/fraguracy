@@ -1,6 +1,8 @@
 mod combine_counts;
 mod combine_errors;
+mod depth;
 mod homopolymer;
+mod pileup;
 
 mod files;
 mod fraguracy;
@@ -138,9 +140,16 @@ enum Commands {
         #[arg(
             short = 'l',
             long,
-            help = "optional lua expression to filter reads. returns true to skip read. e.g. 'return read.flags.secondary or read.flags.supplementary'."
+            help = "optional lua expression to filter reads (once per overlapping pair). returns true to skip pair. e.g. 'return read.flags.secondary or read.flags.supplementary'."
         )]
         lua_expression: Option<String>,
+
+        #[arg(
+            short = 'L',
+            long,
+            help = "optional per-base lua expression (evaluated only if -l passes). has access to `read` and `base` (qpos, bq, gpos, distance_from_5prime, distance_from_3prime, base, is_indel, indel_length). returns true to skip base."
+        )]
+        lua_base_expression: Option<String>,
 
         #[arg(
             short,
@@ -202,7 +211,7 @@ enum Commands {
     //Plot { tsv: PathBuf, },
 }
 
-fn get_sample_name(hmap: HashMap<String, Vec<LinearMap<String, String>>>) -> String {
+fn get_sample_name(hmap: &HashMap<String, Vec<LinearMap<String, String>>>) -> String {
     if let Some(lm) = hmap.get("RG") {
         let sm = String::from("SM");
         if let Some(v) = lm[0].get(&sm) {
@@ -213,6 +222,20 @@ fn get_sample_name(hmap: HashMap<String, Vec<LinearMap<String, String>>>) -> Str
     } else {
         String::from("")
     }
+}
+
+/// Compute 0-based exclusive reference end position directly from `raw_cigar()` without allocating.
+#[inline(always)]
+fn raw_end_pos(r: &bam::Record) -> i64 {
+    // Reference-consuming CIGAR ops: M(0), D(2), N(3), =(7), X(8).
+    const REF_CONSUMING_MASK: u32 = (1 << 0) | (1 << 2) | (1 << 3) | (1 << 7) | (1 << 8);
+    let mut pos = r.pos();
+    for &c in r.raw_cigar() {
+        if (REF_CONSUMING_MASK & (1u32 << (c & 0xF))) != 0 {
+            pos += (c >> 4) as i64;
+        }
+    }
+    pos
 }
 
 fn main() -> std::io::Result<()> {
@@ -231,6 +254,7 @@ fn main() -> std::io::Result<()> {
             regions,
             exclude_regions,
             lua_expression,
+            lua_base_expression,
             bin_size,
             max_read_length,
             min_mapping_quality,
@@ -246,6 +270,7 @@ fn main() -> std::io::Result<()> {
             regions,
             exclude_regions,
             lua_expression,
+            lua_base_expression,
             bin_size as u32,
             max_read_length,
             min_mapping_quality,
@@ -293,10 +318,10 @@ fn read_bed(path: Option<PathBuf>) -> Option<HashMap<String, Lapper<u32, u8>>> {
 
     let mut tree: HashMap<String, Lapper<u32, u8>> = HashMap::new();
 
-    for (chrom, ivs) in bed.iter() {
-        let ivs = ivs.clone();
-        let chrom = (*chrom).clone();
-        tree.insert(chrom, Lapper::new(ivs));
+    for (chrom, ivs) in bed {
+        let mut lapper = Lapper::new(ivs);
+        lapper.merge_overlaps();
+        tree.insert(chrom, lapper);
     }
     Some(tree)
 }
@@ -319,7 +344,8 @@ fn process_bam(
     regions: Option<PathBuf>,
     chromosome: Option<String>,
     exclude_regions: Option<PathBuf>,
-    lua_expression: Option<lua::LuaReadFilter>,
+    lua_expression: Option<&str>,
+    lua_base_expression: Option<&str>,
     bin_size: u32,
     max_read_length: u32,
     min_mapping_quality: u8,
@@ -329,17 +355,26 @@ fn process_bam(
     no_denominator: bool,
     homopolymer_regex: Option<Regex>,
 ) -> (fraguracy::InnerCounts, Vec<String>, String) {
+    let lua_filter = if lua_expression.is_some() || lua_base_expression.is_some() {
+        Some(
+            lua::LuaFilter::new(lua_expression, lua_base_expression, mlua::Lua::new())
+                .expect("error creating lua interpreter"),
+        )
+    } else {
+        None
+    };
+
     let mut bam = IndexedReader::from_path(&path)
         .unwrap_or_else(|_| panic!("error reading bam file {path:?}"));
-    bam.set_threads(1).expect("error setting threads");
-    let mut map = FxHashMap::default();
+    bam.set_threads(2).expect("error setting threads");
+    let mut map: FxHashMap<Box<[u8]>, bam::Record> = FxHashMap::default();
 
     let include_regions = read_bed(regions);
     let exclude_regions = read_bed(exclude_regions);
 
     let mut ibam = IndexedReader::from_path(&path)
         .unwrap_or_else(|_| panic!("bam file {path:?} must be sorted and indexed"));
-    ibam.set_threads(3)
+    ibam.set_threads(2)
         .expect("error setting threads on indexed reader");
 
     let fasta: Option<faidx::Reader> = if let Some(fa_path) = fasta_path {
@@ -358,9 +393,18 @@ fn process_bam(
     let mut counts = fraguracy::Counts::new(
         if reference_as_truth { None } else { Some(ibam) },
         bins as usize,
+        bin_size,
+        min_base_qual,
+        min_mapping_quality,
+        lua_filter,
     );
     let hmap = bam::Header::from_template(bam.header()).to_hashmap();
-    let sample_name = get_sample_name(hmap);
+    let sample_name = get_sample_name(&hmap);
+    let is_coord_sorted = hmap
+        .get("HD")
+        .and_then(|hd| hd.first())
+        .and_then(|lm| lm.get("SO"))
+        .is_some_and(|so| so == "coordinate");
     log::info!("found sample {sample_name}");
 
     if !no_denominator {
@@ -393,100 +437,103 @@ fn process_bam(
         .map(|n| unsafe { str::from_utf8_unchecked(n) }.to_string())
         .collect();
 
-    let mut include_tree: Option<&Lapper<u32, u8>> = get_tree(&include_regions, &chroms[0]);
-    let mut exclude_tree: Option<&Lapper<u32, u8>> = get_tree(&exclude_regions, &chroms[0]);
-    let mut hp_tree: Option<Lapper<u32, u8>> = None;
+    let mut chrom_ctx = fraguracy::ChromCtx {
+        chrom: &chroms[0],
+        chrom_seq: None,
+        include_tree: get_tree(&include_regions, &chroms[0]),
+        exclude_tree: get_tree(&exclude_regions, &chroms[0]),
+        hp_tree: None,
+    };
 
     let mut last_tid: i32 = -1;
-    bam.rc_records()
-        .map(|r| {
-            n_total += 1;
-            r.expect("error parsing read")
-        })
-        .filter(fraguracy::filter_read)
-        .for_each(|b| {
-            let name = unsafe { str::from_utf8_unchecked(b.qname()) }.to_string();
-            if b.is_first_in_template() {
-                n_pairs += 1;
-            }
-            if b.tid() != last_tid {
-                if last_tid != -1 {
-                    log::info!(
-                        "processed chromosome: {} unprocessed orphan pairs: {}",
-                        chroms[last_tid as usize],
-                        map.len()
-                    );
-                }
-                last_tid = b.tid();
-
-                // process the remaining entries in the hashmap in last_depth.
+    // Reuse a single `bam::Record` across filtered-out reads and second mates; we only allocate
+    // a new `bam::Record` when moving the first mate of a pair into `map`.
+    let mut rec = bam::Record::new();
+    while let Some(res) = bam.read(&mut rec) {
+        n_total += 1;
+        res.expect("error parsing read");
+        if !fraguracy::filter_read(&rec) {
+            continue;
+        }
+        if rec.is_first_in_template() {
+            n_pairs += 1;
+        }
+        if rec.tid() != last_tid {
+            if last_tid != -1 {
+                log::info!(
+                    "processed chromosome: {} pending orphan reads in map: {}",
+                    chroms[last_tid as usize],
+                    map.len()
+                );
+                // Flush remaining depth entries under the previous chromosome name before switching.
                 counts.handle_depth(&chroms[last_tid as usize], i64::MAX);
-
-                if include_regions.is_some() {
-                    include_tree = get_tree(&include_regions, &chroms[last_tid as usize]);
+                // In coordinate-sorted mode (with `r.tid() == r.mtid()` enforced by `filter_read`),
+                // anything still in `map` after leaving a chromosome is a true orphan.
+                if is_coord_sorted {
+                    map.clear();
                 }
-                if exclude_regions.is_some() {
-                    exclude_tree = get_tree(&exclude_regions, &chroms[last_tid as usize]);
-                }
+            }
+            last_tid = rec.tid();
+            let cur_chrom = &chroms[last_tid as usize];
+            chrom_ctx.chrom = cur_chrom;
 
+            if include_regions.is_some() {
+                chrom_ctx.include_tree = get_tree(&include_regions, cur_chrom);
+            }
+            if exclude_regions.is_some() {
+                chrom_ctx.exclude_tree = get_tree(&exclude_regions, cur_chrom);
+            }
+
+            if homopolymer_regex.is_some() || reference_as_truth {
+                let seq = fasta
+                    .as_ref()
+                    .unwrap()
+                    .fetch_seq(cur_chrom, 0, i64::MAX as usize)
+                    .expect("error fetching sequence from fasta.");
                 if let Some(ref re) = homopolymer_regex {
-                    let chrom_seq = fasta
-                        .as_ref()
-                        .unwrap()
-                        .fetch_seq(&chroms[last_tid as usize], 0, i64::MAX as usize)
-                        .expect("error fetching sequence from fasta.");
-                    hp_tree = Some(find_homopolymers(&chrom_seq, re));
+                    chrom_ctx.hp_tree = Some(find_homopolymers(&seq, re));
+                }
+                if reference_as_truth {
+                    chrom_ctx.chrom_seq = Some(seq);
                 }
             }
+        }
 
-            // by not checking the order here, we allow bams sorted by read name (with position flipped)
-            // this gives about 5% performance penalty over checking b.pos() < b.mpos(), but allows us
-            // to support more files.
-            match map.entry(name) {
-                std::collections::hash_map::Entry::Vacant(e) => {
-                    e.insert(b);
-                }
-                std::collections::hash_map::Entry::Occupied(e) => {
-                    let a = e.remove();
-
-                    if a.mapq() < min_mapping_quality {
-                        return;
-                    }
-                    if b.mapq() < min_mapping_quality {
-                        return;
-                    }
-                    if let Some(ref lua_expression) = lua_expression {
-                        match lua_expression.skip_read(&a) {
-                            Ok(true) => return,
-                            Ok(false) => (),
-                            Err(e) => log::error!("error evaluating user expression for read: {e}"),
-                        }
-                        match lua_expression.skip_read(&b) {
-                            Ok(true) => return,
-                            Ok(false) => (),
-                            Err(e) => log::error!("error evaluating user expression for read: {e}"),
-                        }
-                    }
-                    // we know a is before b, but we don't know if they overlap.
-                    if a.cigar().end_pos() < b.pos() {
-                        return;
-                    }
-                    let tid = a.tid() as usize;
-                    counts.increment(
-                        a,
-                        b,
-                        min_base_qual,
-                        min_mapping_quality,
-                        bin_size,
-                        &fasta,
-                        &chroms[tid],
-                        &include_tree,
-                        &exclude_tree,
-                        &hp_tree,
-                    );
-                }
+        // Look up by `&[u8]` first via `map.remove` so the second mate of a pair never allocates
+        // a qname key or a new `Record`. For coordinate-sorted BAMs we also skip storing reads
+        // whose mate cannot overlap them (or that fail MAPQ); name-sorted BAMs keep the generic
+        // insert-or-remove path.
+        let mate_later = is_coord_sorted && rec.mpos() > rec.pos();
+        let mate_earlier = is_coord_sorted && rec.mpos() < rec.pos();
+        let found = if mate_later {
+            None
+        } else {
+            map.remove(rec.qname())
+        };
+        let Some(a) = found else {
+            let store = !mate_earlier
+                && (!mate_later
+                    || (rec.mapq() >= min_mapping_quality && raw_end_pos(&rec) > rec.mpos()));
+            if store {
+                let key: Box<[u8]> = rec.qname().into();
+                map.insert(key, std::mem::replace(&mut rec, bam::Record::new()));
             }
-        });
+            continue;
+        };
+
+        if a.mapq() >= min_mapping_quality && rec.mapq() >= min_mapping_quality {
+            // Decode `a`'s CIGAR once here so we can skip non-overlapping pairs before Lua
+            // and pass it into `counts.increment` without decoding it a second time.
+            let a_cigar = a.cigar();
+            if a_cigar.end_pos() > rec.pos() && !counts.skip_pair(&a, &rec) {
+                counts.increment(&a, &rec, &a_cigar, &chrom_ctx);
+            }
+        }
+    }
+    if last_tid != -1 {
+        // Flush any remaining depth entries from the final chromosome at EOF.
+        counts.handle_depth(&chroms[last_tid as usize], i64::MAX);
+    }
     log::info!(
         "[FINAL] map len:{:?} total reads: {:?}, pairs: {} \
         \n mismatches: {} matches: {}",
@@ -509,6 +556,7 @@ fn extract_main(
     regions: Option<PathBuf>,
     exclude_regions: Option<PathBuf>,
     lua_expression: Option<String>,
+    lua_base_expression: Option<String>,
     bin_size: u32,
     max_read_length: u32,
     min_mapping_quality: u8,
@@ -531,10 +579,22 @@ fn extract_main(
             "fasta path must be provided if denominator is calculated",
         ));
     }
+    if reference_as_truth && fasta_path.is_none() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "fasta path must be provided when --reference-as-truth (-t) is set",
+        ));
+    }
 
-    let lua_expression = lua_expression.map(|e| {
-        lua::LuaReadFilter::new(&e, mlua::Lua::new()).expect("error creating lua interpreter")
-    });
+    // Validate lua expressions once up front; each worker thread constructs its own Lua VM.
+    if lua_expression.is_some() || lua_base_expression.is_some() {
+        lua::LuaFilter::new(
+            lua_expression.as_deref(),
+            lua_base_expression.as_deref(),
+            mlua::Lua::new(),
+        )
+        .expect("error creating lua interpreter");
+    }
 
     let total_counts = paths
         .par_iter()
@@ -545,7 +605,8 @@ fn extract_main(
                 regions.clone(),
                 chromosome.clone(),
                 exclude_regions.clone(),
-                lua_expression.clone(),
+                lua_expression.as_deref(),
+                lua_base_expression.as_deref(),
                 bin_size,
                 max_read_length,
                 min_mapping_quality,
@@ -644,5 +705,50 @@ mod tests {
         let regions: Option<HashMap<String, Lapper<u32, u8>>> = None;
         let tree = get_tree(&regions, &"any".to_string());
         assert!(tree.is_none(), "Expected None when regions is None");
+    }
+
+    #[test]
+    fn test_raw_end_pos_matches_cigar() {
+        use rust_htslib::bam::record::{Cigar, CigarString};
+        let cigar = CigarString(vec![
+            Cigar::SoftClip(3),
+            Cigar::Match(10),
+            Cigar::Ins(2),
+            Cigar::Del(4),
+            Cigar::Equal(5),
+            Cigar::Diff(1),
+            Cigar::RefSkip(100),
+            Cigar::HardClip(5),
+        ]);
+        let mut r = bam::Record::new();
+        // Query-consuming ops: 3S + 10M + 2I + 5= + 1X = 21 bp
+        r.set(b"q1", Some(&cigar), &[b'A'; 21], &[30; 21]);
+        r.set_pos(500);
+        // Ref-consuming ops: 10M + 4D + 5= + 1X + 100N = 120 bp -> end_pos = 620
+        assert_eq!(raw_end_pos(&r), r.cigar().end_pos());
+        assert_eq!(raw_end_pos(&r), 620);
+    }
+
+    #[test]
+    fn test_reference_as_truth_no_denominator_requires_fasta() {
+        let err = extract_main(
+            vec![],
+            None,
+            None,
+            PathBuf::from("test-"),
+            None,
+            None,
+            None,
+            None,
+            3,
+            151,
+            50,
+            ConfidenceInterval::AgrestiCoull,
+            true,
+            true,
+            homopolymer::HP_REGEX.to_string(),
+        )
+        .unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
     }
 }
